@@ -1056,6 +1056,7 @@
   }
 
   const AUTO_PLACE_BTN = '<button data-do="autoPlace" title="Espalha os soldados que faltam nas suas comunidades de fronteira, começando pelas mais fracas">⚡ Distribuir automaticamente</button>';
+  const CLEAR_SEL_BTN = '<button data-do="clearSel" title="Desfaz a seleção (Esc)">✖ Cancelar seleção</button>';
 
   function renderActions() {
     const box = $('#actions');
@@ -1126,9 +1127,9 @@
       if (!left) {
         h += '<p class="muted">Você já fez os remanejamentos permitidos. Encerre o turno.</p>';
       } else if (sel.a && sel.b) {
-        h += `<div class="selbox">Mover de <b>${esc(TERR[sel.a].name)}</b> para <b>${esc(TERR[sel.b].name)}</b></div>${stepperHtml({ act: 'fortify', text: 'Mover' }, ctxMax())}`;
+        h += `<div class="selbox">Mover de <b>${esc(TERR[sel.a].name)}</b> para <b>${esc(TERR[sel.b].name)}</b></div>${stepperHtml({ act: 'fortify', text: 'Mover' }, ctxMax())}${CLEAR_SEL_BTN}`;
       } else if (sel.a) {
-        h += `<div class="selbox">Origem: <b>${esc(TERR[sel.a].name)}</b>. Escolha um vizinho seu (marcado em verde).</div>`;
+        h += `<div class="selbox">Origem: <b>${esc(TERR[sel.a].name)}</b>. Escolha um vizinho seu (marcado em verde).</div>${CLEAR_SEL_BTN}`;
       } else {
         h += '<p class="muted">Clique em uma comunidade sua e depois em uma vizinha sua. Cada movimento conta 1 remanejamento, não importa quantos soldados leve. Tropas que acabaram de chegar não se movem de novo neste turno.</p>';
       }
@@ -1147,6 +1148,7 @@
       case 'fireMode': mode = { kind: 'fire', from: sel.a }; return renderGame();
       case 'build': send({ type: 'build', weapon: b.dataset.w, territory: sel.a }); return;
       case 'cancelMode': mode = null; return renderGame();
+      case 'clearSel': sel = { a: null, b: null }; return renderGame();
       case 'cardPlayer': send({ type: 'playCard', card: mode.card, player: Number(b.dataset.p) }); mode = null; return renderGame();
       case 'cardMove': send({ type: 'playCard', card: mode.card, from: mode.from, to: mode.to, n: qty }); mode = null; return renderGame();
       case 'qty-': qty = Math.max(1, qty - 1); return renderActions();
@@ -2063,6 +2065,7 @@
     if (rulesOpen) closeRules();
     else if (histOpen) closeHistory();
     else if (treeOpen && S) { treeOpen = false; renderModal(); }
+    else if (S && S.phase === 'fortify' && sel.a && !mode) { sel = { a: null, b: null }; renderGame(); }
   });
 
   buildMap();
