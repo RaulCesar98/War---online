@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WAR · Facções</title>
+  <meta name="description" content="Jogo de estratégia WAR multiplayer: domine comunidades, cumpra seu objetivo e vença seus amigos.">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏙️</text></svg>">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="conn" class="conn hidden">Reconectando…</div>
+  <div id="toast" class="toast"></div>
+
+  <!-- INÍCIO -->
+  <section id="home" class="screen center hidden">
+    <div class="card home-card">
+      <h1 class="logo">WAR</h1>
+      <p class="sub">Facções em disputa pelas comunidades da cidade · 2 a 10 jogadores</p>
+      <label class="field">Seu nome
+        <input id="nameInput" maxlength="16" placeholder="Ex.: Napoleão" autocomplete="off">
+      </label>
+      <button id="createBtn" class="primary big">Criar sala</button>
+      <div class="or"><span>ou entre numa sala</span></div>
+      <div class="join-row">
+        <input id="codeInput" maxlength="4" placeholder="CÓDIGO" autocomplete="off" spellcheck="false">
+        <button id="joinBtn" class="big">Entrar</button>
+      </div>
+      <button id="rulesHomeBtn" class="link">📖 Regras do jogo</button>
+    </div>
+  </section>
+
+  <!-- SALA DE ESPERA -->
+  <section id="lobby" class="screen center hidden">
+    <div class="card home-card">
+      <p class="sub">Código da sala</p>
+      <div id="lobbyCode" class="code"></div>
+      <button id="copyLinkBtn" class="link">Copiar link de convite</button>
+      <ul id="lobbyPlayers" class="lobby-players"></ul>
+      <label class="toggle" id="expandedRow">
+        <input type="checkbox" id="expandedChk">
+        <span><b>Modo expandido</b><small>Árvore de tecnologia, armas construíveis e cartas de ação</small></span>
+      </label>
+      <p id="lobbyHint" class="hint"></p>
+      <button id="startBtn" class="primary big">Iniciar partida</button>
+      <button id="rulesLobbyBtn" class="link">📖 Ver regras</button>
+      <button id="leaveLobbyBtn" class="link">Sair da sala</button>
+    </div>
+  </section>
+
+  <!-- JOGO -->
+  <section id="game" class="screen hidden">
+    <header id="topbar" class="topbar"></header>
+    <div class="game-layout">
+      <div class="map-col">
+        <div class="map-wrap"><svg id="map" viewBox="0 0 1000 600" preserveAspectRatio="xMidYMid meet"></svg></div>
+        <div id="legend" class="legend"></div>
+      </div>
+      <aside class="side">
+        <div id="banner" class="banner"></div>
+        <div id="actions" class="panel"></div>
+        <div id="research" class="panel hidden"></div>
+        <div id="combat" class="panel combat hidden"></div>
+        <div id="players" class="panel"></div>
+        <div class="panel">
+          <div class="panel-title">Seu objetivo <button id="eyeBtn" class="mini">ocultar</button></div>
+          <div id="objective" class="objective"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-title">Suas cartas <span id="tradeInfo" class="muted"></span></div>
+          <div id="hand" class="hand"></div>
+          <button id="tradeBtn" class="primary hidden">Trocar cartas</button>
+        </div>
+        <div id="actionPanel" class="panel hidden">
+          <div class="panel-title">Cartas de ação <span id="actionInfo" class="muted"></span></div>
+          <div id="actionHand" class="action-hand"></div>
+        </div>
+        <div class="panel">
+          <div class="tabs">
+            <button id="tabLog" class="tab active">Registro</button>
+            <button id="tabChat" class="tab">Chat</button>
+          </div>
+          <div id="logBox" class="logbox"></div>
+          <form id="chatForm" class="chat-form hidden">
+            <input id="chatInput" maxlength="200" placeholder="Mensagem…" autocomplete="off">
+            <button class="primary">Enviar</button>
+          </form>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <div id="modal" class="modal hidden"><div id="modalBox" class="modal-box"></div></div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="client.js"></script>
+</body>
+</html>
