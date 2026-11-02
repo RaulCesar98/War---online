@@ -88,7 +88,7 @@ function checkInvariants(g) {
   if (!g.expanded) g.players.forEach((p) => assert(p.techs.length === 0 && p.weapons.length === 0 && !p.actionHand.length));
 }
 
-const stats = { research: 0, unlock: 0, build: 0, fire: 0, cards: {}, truceBlocks: 0 };
+const stats = { autoAttack: 0, autoEnd: 0, research: 0, unlock: 0, build: 0, fire: 0, cards: {}, truceBlocks: 0 };
 
 // tenta ações do modo expandido ao acaso; falhas devem ser limpas (sem alterar o estado)
 function tryExpanded(g, i, rng) {
@@ -147,7 +147,9 @@ function playBot(g, i, rng) {
   };
   if (g.expanded) tryExpanded(g, i, rng);
   placeAll();
-  must(g.act(i, { type: 'endReinforce' }), 'endReinforce');
+  // sem troca possível o jogo já passa sozinho para o ataque
+  if (g.phase === 'reinforce') must(g.act(i, { type: 'endReinforce' }), 'endReinforce');
+  else stats.autoAttack++;
 
   // ataque
   for (let k = 0; k < 40 && g.phase === 'attack'; k++) {
@@ -191,17 +193,20 @@ function playBot(g, i, rng) {
     if (movable >= 1) must(g.act(i, { type: 'fortify', from, to, n: 1 + Math.floor(rng() * movable) }), 'fortify');
   }
   if (g.phase === 'over') return;
-  must(g.act(i, { type: 'endTurn' }), 'endTurn');
+  // usados todos os remanejamentos, o turno passa sozinho
+  if (g.phase === 'fortify' && g.turn === i) must(g.act(i, { type: 'endTurn' }), 'endTurn');
+  else stats.autoEnd++;
 }
 
-function playGame(seed, nPlayers, expanded = false, maxTurns = 3000) {
+function playGame(seed, nPlayers, expanded = false, maxTurns = 3000, maxRounds = 0) {
   const rng = mulberry(seed);
-  const g = new Game(Array.from({ length: nPlayers }, (_, k) => `J${k + 1}`), rng, { expanded });
+  const g = new Game(Array.from({ length: nPlayers }, (_, k) => `J${k + 1}`), rng, { expanded, maxRounds });
   // fase inicial
   g.players.forEach((p, i) => {
     const mine = g._owned(i);
-    while (p.pool > 0) must(g.act(i, { type: 'place', territory: mine[Math.floor(rng() * mine.length)], n: 1 }), 'setup');
-    must(g.act(i, { type: 'ready' }), 'ready');
+    while (g.phase === 'setup' && p.pool > 0) must(g.act(i, { type: 'place', territory: mine[Math.floor(rng() * mine.length)], n: 1 }), 'setup');
+    assert(p.ready, 'ao distribuir tudo na preparação o jogador fica pronto sozinho');
+    assert(!g.act(i, { type: 'ready' }).ok, 'não confirma duas vezes');
   });
   assert.strictEqual(g.phase, 'reinforce');
   let turns = 0;
@@ -229,7 +234,7 @@ const results = { winners: 0, unfinished: 0, turns: 0 };
 const N = 90;
 for (let s = 1; s <= N; s++) {
   const players = 2 + (s % 9);
-  const { g, turns } = playGame(s, players, s % 2 === 0);
+  const { g, turns } = playGame(s, players, s % 2 === 0, 3000, s % 3 === 0 ? 8 : 0);
   if (g.phase === 'over') {
     results.winners++;
     assert(g.winner !== null && g.players[g.winner].alive);
@@ -255,6 +260,107 @@ assert(Object.keys(stats.cards).length >= 5, 'cartas de ação variadas deveriam
   assert(g.autoPlay(t).ok);
   assert.notStrictEqual(g.turn, t);
   console.log('✔ autoPlay OK');
+}
+// ---------- limite de remanejamentos por turno ----------
+{
+  const { ADJ, FORTIFY_PER_TURN } = require('../server/data');
+  const g = new Game(['A', 'B'], mulberry(7));
+  g.players.forEach((p) => { p.pool = 0; p.ready = true; });
+  g._startPlay();
+  const i = g.turn;
+  g.players[i].pool = 0;
+  must(g.act(i, { type: 'endReinforce' }), 'endReinforce');
+  must(g.act(i, { type: 'endAttack' }), 'endAttack');
+  // dá à facção uma comunidade cheia e uma vizinha, para mover várias vezes
+  const from = g._owned(i).find((id) => ADJ[id].some((n) => g.terr[n].owner === i));
+  const to = ADJ[from].find((n) => g.terr[n].owner === i);
+  g.terr[from].armies = 20;
+  for (let k = 0; k < FORTIFY_PER_TURN - 1; k++) must(g.act(i, { type: 'fortify', from, to, n: 1 }), `remanejamento ${k + 1}`);
+  assert.strictEqual(g.view(i).fortifiesLeft, 1, 'resta 1 remanejamento');
+  assert.strictEqual(g.turn, i, 'o turno continua enquanto houver remanejamentos');
+  must(g.act(i, { type: 'fortify', from, to, n: 1 }), 'último remanejamento');
+  assert.notStrictEqual(g.turn, i, 'esgotados os remanejamentos, o turno passa sozinho');
+  const extra = g.act(i, { type: 'fortify', from, to, n: 1 });
+  assert(!extra.ok, `o ${FORTIFY_PER_TURN + 1}º remanejamento deve ser recusado`);
+  assert.strictEqual(g.view(g.turn).fortifiesLeft, FORTIFY_PER_TURN, 'o limite volta no turno seguinte');
+  console.log(`✔ remanejamento limitado a ${FORTIFY_PER_TURN} por turno (e o turno passa sozinho ao esgotar)`);
+}
+// ---------- ritmo: distribuição automática, avanço automático, ocupação direta, escalada ----------
+{
+  const { ESCALATION_EVERY } = require('../server/data');
+  const g = new Game(['A', 'B', 'C'], mulberry(11));
+  must(g.act(0, { type: 'autoPlace' }), 'autoPlace setup');
+  assert(g.players[0].pool === 0 && g.players[0].ready, 'distribuir automaticamente na preparação deixa pronto');
+  assert(!g.act(0, { type: 'autoPlace' }).ok, 'nada mais a distribuir');
+  must(g.act(1, { type: 'autoPlace' }), 'autoPlace B');
+  must(g.act(2, { type: 'autoPlace' }), 'autoPlace C');
+  assert.strictEqual(g.phase, 'reinforce');
+  const i = g.turn;
+  const other = (i + 1) % 3;
+  assert(!g.act(other, { type: 'autoPlace' }).ok, 'fora da vez não distribui');
+  must(g.act(i, { type: 'autoPlace' }), 'autoPlace reforço');
+  assert.strictEqual(g.phase, 'attack', 'sem cartas para trocar, o reforço passa sozinho para o ataque');
+
+  // com uma troca possível, o reforço espera o jogador
+  const g2 = new Game(['A', 'B'], mulberry(12));
+  g2.players.forEach((p) => { p.pool = 0; p.ready = true; });
+  g2._startPlay();
+  const j = g2.turn;
+  g2.players[j].cards = g2.deck.splice(0, 3).map((c, k) => ({ ...c, symbol: ['triangulo', 'quadrado', 'circulo'][k] }));
+  must(g2.act(j, { type: 'place', territory: g2._owned(j)[0], n: g2.players[j].pool }), 'place');
+  assert.strictEqual(g2.phase, 'reinforce', 'com troca possível o reforço não avança sozinho');
+
+  // ocupação sem escolha (mínimo = máximo) é feita direto
+  let conquered = false;
+  for (let k = 0; k < 200 && !conquered; k++) {
+    const g3 = new Game(['A', 'B'], mulberry(100 + k));
+    g3.players.forEach((p) => { p.pool = 0; p.ready = true; });
+    g3._startPlay();
+    const a = g3.turn;
+    g3.players[a].pool = 0;
+    must(g3.act(a, { type: 'endReinforce' }), 'endReinforce');
+    const from = g3._owned(a).find((id) => ADJ[id].some((n) => g3.terr[n].owner !== a));
+    const to = ADJ[from].find((n) => g3.terr[n].owner !== a);
+    g3.terr[from].armies = 2;
+    g3.terr[to].armies = 1;
+    must(g3.act(a, { type: 'attack', from, to, dice: 1 }), 'attack');
+    if (g3.terr[to].owner === a) {
+      conquered = true;
+      assert.strictEqual(g3.pendingMove, null, 'sem escolha, não pergunta quantos mover');
+      assert.strictEqual(g3.terr[to].armies, 1);
+      assert.strictEqual(g3.terr[from].armies, 1);
+    }
+  }
+  assert(conquered, 'alguma conquista deveria ocorrer');
+
+  // escalada: +1 de reforço a cada ESCALATION_EVERY rodadas
+  const g4 = new Game(['A', 'B', 'C', 'D'], mulberry(13));
+  g4.players.forEach((p, k) => g4.autoPlay(k));
+  while (g4.round < ESCALATION_EVERY) g4.autoPlay(g4.turn);
+  assert.strictEqual(g4.turnInfo.war, 1, 'escalada de +1 na rodada ' + ESCALATION_EVERY);
+  console.log('✔ ritmo: distribuição automática, avanço automático, ocupação direta e escalada OK');
+}
+// ---------- limite de rodadas ----------
+{
+  const g = new Game(['A', 'B', 'C', 'D'], mulberry(21), { maxRounds: 3 });
+  g.players.forEach((p, k) => g.autoPlay(k));
+  const turns = [0, 0, 0, 0];
+  let guard = 0;
+  while (g.phase !== 'over' && guard++ < 100) { turns[g.turn]++; g.autoPlay(g.turn); }
+  assert.strictEqual(g.phase, 'over');
+  assert.strictEqual(g.endReason, 'limit', 'termina pelo limite de rodadas');
+  assert.deepStrictEqual(turns, [3, 3, 3, 3], 'todos jogam o mesmo número de turnos');
+  assert.strictEqual(g.round, 3, 'o contador para na última rodada');
+  const best = Math.max(...g.players.map((p, k) => g._score(k)));
+  assert.strictEqual(g._score(g.winner), best, 'vence quem tem mais pontos');
+  assert(g.log.some((l) => l.k === 'lastRound') && g.log.some((l) => l.k === 'limit'), 'avisa a última rodada e o placar');
+  assert.strictEqual(g.view(0).players[0].score, g._score(0), 'a pontuação vai para os clientes');
+  // sem limite, a partida segue
+  const g2 = new Game(['A', 'B', 'C', 'D'], mulberry(21));
+  g2.players.forEach((p, k) => g2.autoPlay(k));
+  for (let k = 0; k < 40; k++) g2.autoPlay(g2.turn);
+  assert.notStrictEqual(g2.phase, 'over', 'sem limite não há fim por rodadas');
+  console.log('✔ limite de rodadas: mesmos turnos para todos e vitória por pontos');
 }
 // ---------- regras do modo expandido (testes dirigidos) ----------
 {

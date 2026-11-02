@@ -2,13 +2,14 @@
 
 const {
   CONTINENTS, TERRITORIES, ADJ, COLORS, MAX_PLAYERS, OBJECTIVES, SYMBOLS, TOTAL_ARMIES, TRADE_SEQ,
-  PP_BASE, ACTION_HAND_MAX, BUILDS_PER_TURN, TECHS, WEAPONS, ACTION_CARDS,
+  PP_BASE, ACTION_HAND_MAX, BUILDS_PER_TURN, FORTIFY_PER_TURN, TECHS, WEAPONS, ACTION_CARDS, ESCALATION_EVERY,
 } = require('./data');
 
 const TERR_IDS = TERRITORIES.map((t) => t.id);
 const TERR_BY_ID = Object.fromEntries(TERRITORIES.map((t) => [t.id, t]));
 const MUST_TRADE_AT = 5; // com 5 ou mais cartas a troca é obrigatória
 const PHASES_ACTIVE = ['reinforce', 'attack', 'fortify'];
+const LOG_MAX = 5000; // histórico completo da partida (o estado enviado a cada jogada leva só o final)
 
 // distância (em fronteiras) entre todos os pares de comunidades
 const DIST = {};
@@ -60,6 +61,9 @@ class Game {
     if (n < 2 || n > MAX_PLAYERS) throw new Error(`O jogo precisa de 2 a ${MAX_PLAYERS} jogadores`);
     this.rng = rng;
     this.expanded = !!opts.expanded;
+    this.maxRounds = Math.max(0, Math.floor(Number(opts.maxRounds)) || 0); // 0 = sem limite
+    this.first = 0; // quem abre cada rodada
+    this.endReason = null; // 'objective' | 'last' | 'limit'
     this.truces = []; // { by, against }: 'against' não ataca 'by' até o próximo turno de 'by'
     this.buff = { ofensiva: false, built: 0 };
     this.phase = 'setup'; // setup | reinforce | attack | fortify | over
@@ -70,10 +74,13 @@ class Game {
     this.lastCombat = null;
     this.combatSeq = 0;
     this.conqueredThisTurn = false;
+    this.fortifies = 0; // remanejamentos feitos no turno atual
     this.tradeCount = 0;
     this.turnInfo = null;
     this.log = [];
     this.logSeq = 0;
+    this.startedAt = Date.now(); // relógio da partida
+    this.endedAt = null;
 
     this.players = names.map((name, i) => ({
       name, color: i, alive: true, cards: [], objective: null, pool: 0, ready: false,
@@ -119,8 +126,9 @@ class Game {
 
   _log(p, t, k, m) {
     this.logSeq += 1;
-    this.log.push({ p, t, k, m, n: this.logSeq });
-    if (this.log.length > 150) this.log.shift();
+    // r/ph/at: rodada, fase e hora da jogada (usados na página de histórico)
+    this.log.push({ p, t, k, m, n: this.logSeq, r: this.round, ph: this.phase, at: Date.now() });
+    if (this.log.length > LOG_MAX) this.log.shift();
   }
 
   _name(i) { return this.players[i].name; }
@@ -138,6 +146,14 @@ class Game {
   _mustTrade(i) { return this.players[i].cards.length >= MUST_TRADE_AT; }
 
   _tech(i, id) { return this.expanded && this.players[i].techs.includes(id); }
+
+  // pontos usados quando acaba o limite de rodadas: comunidades + bônus das regiões inteiras
+  _score(i) {
+    return this._ownedCount(i) + Object.keys(CONTINENTS)
+      .reduce((s, c) => s + (this._ownsContinent(i, c) ? CONTINENTS[c].bonus : 0), 0);
+  }
+
+  _armies(i) { return TERR_IDS.reduce((s, id) => s + (this.terr[id].owner === i ? this.terr[id].armies : 0), 0); }
 
   _truced(attacker, defender) {
     return this.truces.some((t) => t.by === defender && t.against === attacker);
@@ -222,14 +238,26 @@ class Game {
   _checkWin(i) {
     if (this.phase === 'over') return true;
     const alive = this.players.filter((p) => p.alive).length;
-    if (alive === 1 && this.players[i].alive) return this._win(i, 'dominou a cidade, restando apenas a sua facção');
-    if (this.players[i].alive && this._objectiveDone(i)) return this._win(i, 'cumpriu o seu objetivo');
+    if (alive === 1 && this.players[i].alive) return this._win(i, 'dominou a cidade, restando apenas a sua facção', 'last');
+    if (this.players[i].alive && this._objectiveDone(i)) return this._win(i, 'cumpriu o seu objetivo', 'objective');
     return false;
   }
 
-  _win(i, why) {
+  // fim do limite de rodadas: vence quem tem mais pontos (desempate: mais soldados, depois mais cartas)
+  _endByLimit() {
+    const ranked = this.players.map((p, i) => i).filter((i) => this.players[i].alive)
+      .sort((a, b) => this._score(b) - this._score(a) || this._armies(b) - this._armies(a)
+        || this.players[b].cards.length - this.players[a].cards.length);
+    const w = ranked[0];
+    this._log(null, `Fim das ${this.maxRounds} rodadas! Placar: ${ranked.map((i) => `${this._name(i)} ${this._score(i)}`).join(', ')}.`, 'limit');
+    return this._win(w, `fez mais pontos ao fim das ${this.maxRounds} rodadas (${this._score(w)} pontos)`, 'limit');
+  }
+
+  _win(i, why, reason) {
     this.phase = 'over';
+    this.endReason = reason;
     this.winner = i;
+    this.endedAt = Date.now();
     this.pendingMove = null;
     this._log(i, `${this._name(i)} venceu a partida: ${why}!`, 'win');
     return true;
@@ -249,6 +277,7 @@ class Game {
   _dispatch(i, a) {
     switch (a.type) {
       case 'place': return this._place(i, a);
+      case 'autoPlace': return this._autoPlace(i);
       case 'ready': return this._ready(i);
       case 'trade': return this._trade(i, a);
       case 'endReinforce': return this._endReinforce(i);
@@ -286,7 +315,57 @@ class Game {
     if (n > p.pool) return fail('Você não tem tantos soldados para distribuir.');
     t.armies += n;
     p.pool -= n;
+    if (this.phase !== 'setup') {
+      this._log(i, `${p.name} colocou ${n} soldado(s) em ${TERR_BY_ID[a.territory].name}.`, 'reinforce', { to: a.territory, n });
+    }
+    this._afterPlace(i);
     return ok();
+  }
+
+  // "Distribuir automaticamente": espalha o que falta nas fronteiras mais fracas
+  _autoPlace(i) {
+    const p = this.players[i];
+    if (this.phase === 'setup') {
+      if (p.ready) return fail('Você já confirmou a distribuição.');
+    } else if (!this._isTurn(i) || !(this.phase === 'reinforce' || (this.phase === 'attack' && p.pool > 0))) {
+      return fail('Não é possível colocar soldados agora.');
+    }
+    if (p.pool <= 0) return fail('Não há soldados para distribuir.');
+    this._dumpPool(i);
+    this._afterPlace(i);
+    return ok();
+  }
+
+  // Avança sozinho quando não sobra nada a decidir: na preparação, fica pronto ao zerar os soldados;
+  // no reforço, vai para o ataque se não houver troca possível nem carta de Reforço na mão.
+  _afterPlace(i) {
+    const p = this.players[i];
+    if (p.pool > 0) return;
+    if (this.phase === 'setup') { this._ready(i); return; }
+    if (this.phase !== 'reinforce' || findSet(p.cards)) return;
+    if (this.expanded && p.actionHand.some((c) => c.type === 'reforco')) return;
+    this._endReinforce(i);
+  }
+
+  _dumpPool(i) {
+    const p = this.players[i];
+    const mine = this._owned(i);
+    const border = mine.filter((id) => ADJ[id].some((n) => this.terr[n].owner !== i));
+    const spots = border.length ? border : mine;
+    const placed = {};
+    while (p.pool > 0 && spots.length) {
+      const min = Math.min(...spots.map((id) => this.terr[id].armies));
+      const weakest = spots.filter((id) => this.terr[id].armies === min);
+      const id = weakest[Math.floor(this.rng() * weakest.length)];
+      this.terr[id].armies += 1;
+      placed[id] = (placed[id] || 0) + 1;
+      p.pool -= 1;
+    }
+    if (this.phase !== 'setup') {
+      Object.entries(placed).forEach(([id, n]) => {
+        this._log(i, `${p.name} colocou ${n} soldado(s) em ${TERR_BY_ID[id].name} (automático).`, 'reinforce', { to: id, n });
+      });
+    }
   }
 
   _ready(i) {
@@ -303,7 +382,8 @@ class Game {
   _startPlay() {
     this.round = 1;
     const first = Math.floor(this.rng() * this.players.length);
-    this._log(null, 'A guerra começou!', 'start');
+    this.first = first;
+    this._log(null, `A guerra começou!${this.maxRounds ? ` A partida dura ${this.maxRounds} rodadas.` : ''}`, 'start');
     this._beginTurn(first);
   }
 
@@ -311,6 +391,7 @@ class Game {
     this.turn = i;
     this.phase = 'reinforce';
     this.conqueredThisTurn = false;
+    this.fortifies = 0;
     this.pendingMove = null;
     this.lastCombat = null;
     this.buff = { ofensiva: false, built: 0 };
@@ -324,12 +405,13 @@ class Game {
     let tech = 0;
     if (this._tech(i, 'intendencia')) tech += 1;
     if (this._tech(i, 'industria')) tech += 2;
-    const total = base + continents.reduce((s, x) => s + x.bonus, 0) + tech;
+    const war = Math.floor(this.round / ESCALATION_EVERY); // escalada: a guerra esquenta com o passar das rodadas
+    const total = base + continents.reduce((s, x) => s + x.bonus, 0) + tech + war;
     const p = this.players[i];
-    this.turnInfo = { base, continents, tech, total, pp: 0 };
+    this.turnInfo = { base, continents, tech, war, total, pp: 0 };
     p.pool += total;
     const extra = continents.length ? ` + regiões (${continents.map((x) => `${CONTINENTS[x.c].name} +${x.bonus}`).join(', ')})` : '';
-    this._log(i, `Vez de ${this._name(i)}: ${total} soldados de reforço (${count} comunidades → ${base}${extra}${tech ? ` + tecnologia ${tech}` : ''}).`, 'turn', { player: i });
+    this._log(i, `Vez de ${this._name(i)}: ${total} soldados de reforço (${count} comunidades → ${base}${extra}${tech ? ` + tecnologia ${tech}` : ''}${war ? ` + escalada ${war}` : ''}).`, 'turn', { player: i });
 
     if (this.expanded) {
       const pp = PP_BASE + Math.floor(count / 6) + continents.length
@@ -373,7 +455,7 @@ class Game {
         bonusTerr.push(TERR_BY_ID[c.territory].name);
       }
     });
-    this._log(i, `${p.name} trocou 3 cartas por ${armies} soldados${bonusTerr.length ? ` (+2 em ${bonusTerr.join(', ')})` : ''}.`, 'trade');
+    this._log(i, `${p.name} trocou 3 cartas por ${armies} soldados${bonusTerr.length ? ` (+2 em ${bonusTerr.join(', ')})` : ''}.`, 'trade', { n: armies });
     return ok();
   }
 
@@ -383,6 +465,7 @@ class Game {
     if (p.pool > 0) return fail(`Distribua todos os soldados (faltam ${p.pool}).`);
     if (this._mustTrade(i)) return fail('Você tem 5 ou mais cartas: troque antes de continuar.');
     this.phase = 'attack';
+    this._log(i, `${p.name} passou para o ataque.`, 'phase', { phase: 'attack' });
     if (this._checkWin(i)) return ok();
     return ok();
   }
@@ -418,31 +501,45 @@ class Game {
       const notes = [];
       let tie0 = false;
       let tie1 = false;
+      // cada dado guarda se recebeu +1, para o painel de combate mostrar de onde veio o valor
+      const A = att.map((v) => ({ v, b: 0 }));
+      const D = def.map((v) => ({ v, b: 0 }));
+      const bump = (d) => { if (d.v < 6) { d.v += 1; d.b = 1; } };
       if (this.expanded) {
-        if (f.w === 'canhao') { att[0] = Math.min(6, att[0] + 1); notes.push(`${WEAPONS.canhao.name}: ataque +1`); }
-        if (t.w === 'bunker') { def[0] = Math.min(6, def[0] + 1); notes.push(`${WEAPONS.bunker.name}: defesa +1`); }
-        if (def.length === 3 && this._tech(defender, 'trincheiras')) { def[2] = Math.min(6, def[2] + 1); notes.push(`${TECHS.trincheiras.name}: defesa +1`); }
-        att.sort((x, y) => y - x);
-        def.sort((x, y) => y - x);
+        if (f.w === 'canhao') { bump(A[0]); notes.push(`${WEAPONS.canhao.name}: ataque +1`); }
+        if (t.w === 'bunker') { bump(D[0]); notes.push(`${WEAPONS.bunker.name}: defesa +1`); }
+        if (D.length === 3 && this._tech(defender, 'trincheiras')) { bump(D[2]); notes.push(`${TECHS.trincheiras.name}: defesa +1`); }
+        A.sort((x, y) => y.v - x.v);
+        D.sort((x, y) => y.v - x.v);
         if (this.buff.ofensiva) { tie0 = true; notes.push('Ofensiva total'); }
         if (this._tech(i, 'guerra_total')) { tie0 = true; notes.push(TECHS.guerra_total.name); }
-        if (f.w === 'tanques' && att.length === 3) { tie0 = true; notes.push(WEAPONS.tanques.name); }
+        if (f.w === 'tanques' && A.length === 3) { tie0 = true; notes.push(WEAPONS.tanques.name); }
         tie1 = tie0 || this._tech(i, 'assalto');
       }
       let lossA = 0;
       let lossD = 0;
-      for (let k = 0; k < Math.min(att.length, def.length); k++) {
+      const pairs = []; // resultado de cada par (maior × maior, 2º × 2º, 3º × 3º)
+      for (let k = 0; k < Math.min(A.length, D.length); k++) {
         const tie = k === 0 ? tie0 : tie1;
-        if (att[k] > def[k] || (att[k] === def[k] && tie)) lossD++; else lossA++;
+        const attWins = A[k].v > D[k].v || (A[k].v === D[k].v && tie);
+        pairs.push({ w: attWins ? 'att' : 'def', tie: A[k].v === D[k].v });
+        if (attWins) lossD++; else lossA++;
       }
-      if (lossD > 1 && this._tech(defender, 'muralha')) { lossD = 1; notes.push(`${TECHS.muralha.name}: defesa perde só 1`); }
+      const wall = lossD > 1 && this._tech(defender, 'muralha');
+      if (wall) { lossD = 1; notes.push(`${TECHS.muralha.name}: defesa perde só 1`); }
       t.armies -= lossD;
       f.armies -= lossA;
       agg.lossA += lossA;
       agg.lossD += lossD;
       agg.rounds++;
-      agg.attDice = att;
-      agg.defDice = def;
+      agg.attDice = A.map((d) => d.v);
+      agg.defDice = D.map((d) => d.v);
+      agg.attBonus = A.map((d) => d.b);
+      agg.defBonus = D.map((d) => d.b);
+      agg.pairs = pairs;
+      agg.lastLossA = lossA;
+      agg.lastLossD = lossD;
+      agg.wall = wall;
       agg.notes = [...new Set(notes)];
       if (t.armies <= 0) agg.conquered = true;
     } while (a.blitz && !agg.conquered && f.armies >= 2);
@@ -450,7 +547,9 @@ class Game {
     agg.id = ++this.combatSeq;
     this.lastCombat = agg;
     const dest = TERR_BY_ID[a.to].name;
-    this._log(i, `${p.name} atacou ${dest} (${agg.def}) a partir de ${TERR_BY_ID[a.from].name}: ${agg.lossA} baixa(s) no ataque, ${agg.lossD} na defesa.`);
+    this._log(i, `${p.name} atacou ${dest} (${agg.def}) a partir de ${TERR_BY_ID[a.from].name}: ${agg.lossA} baixa(s) no ataque, ${agg.lossD} na defesa.`, 'attack', {
+      from: a.from, to: a.to, def: defender, lossA: agg.lossA, lossD: agg.lossD, rounds: agg.rounds, conquered: agg.conquered,
+    });
 
     if (agg.conquered) {
       t.owner = i;
@@ -459,8 +558,10 @@ class Game {
       if (t.w) { this._log(i, `${WEAPONS[t.w].name} em ${dest} foi destruído quando a comunidade foi dominada.`, 'destroy', { to: a.to }); t.w = null; }
       this.conqueredThisTurn = true;
       this.pendingMove = { from: a.from, to: a.to, min: diceUsed, max: f.armies - 1 };
-      this._log(i, `${p.name} dominou ${dest}!`, 'conquer', { to: a.to });
+      this._log(i, `${p.name} dominou ${dest}!`, 'conquer', { from: a.from, to: a.to, def: defender });
       if (this._ownedCount(defender) === 0) this._eliminate(i, defender);
+      // sem escolha (mínimo = máximo): ocupa direto, sem perguntar
+      if (this.pendingMove.min >= this.pendingMove.max) this._occupy(i, { n: this.pendingMove.max });
     }
     return ok();
   }
@@ -496,7 +597,7 @@ class Game {
     this.terr[pm.from].armies -= n;
     this.terr[pm.to].armies = n;
     this.pendingMove = null;
-    this._log(i, `${this._name(i)} ocupou ${TERR_BY_ID[pm.to].name} com ${n} soldado(s).`, 'occupy', { to: pm.to });
+    this._log(i, `${this._name(i)} ocupou ${TERR_BY_ID[pm.to].name} com ${n} soldado(s) vindos de ${TERR_BY_ID[pm.from].name}.`, 'occupy', { from: pm.from, to: pm.to, n });
     if (this._tech(i, 'blitzkrieg')) {
       this.terr[pm.to].armies += 1;
       this._log(i, 'Ocupação relâmpago: +1 soldado grátis na comunidade dominada.', 'place', { to: pm.to });
@@ -524,6 +625,7 @@ class Game {
     if (this._mustTrade(i)) return fail('Você tem 5 ou mais cartas: troque antes de continuar.');
     if (this.conqueredThisTurn) this._draw(i);
     this.phase = 'fortify';
+    this._log(i, `${p.name} passou para o remanejamento.`, 'phase', { phase: 'fortify' });
     this._checkWin(i);
     return ok();
   }
@@ -534,6 +636,7 @@ class Game {
     const t = this.terr[a.to];
     if (!f || !t || f.owner !== i || t.owner !== i) return fail('Escolha duas comunidades suas.');
     if (a.from === a.to) return fail('Escolha comunidades diferentes.');
+    if (this.fortifies >= FORTIFY_PER_TURN) return fail(`Você já fez os ${FORTIFY_PER_TURN} remanejamentos deste turno. Encerre o turno.`);
     if (this._tech(i, 'ferrovias')) {
       if (!this._connectedOwn(i, a.from, a.to)) return fail('Sem rede de becos: as comunidades precisam estar ligadas por comunidades suas.');
     } else if (!ADJ[a.from].includes(a.to)) {
@@ -545,8 +648,12 @@ class Game {
     f.armies -= n;
     t.armies += n;
     t.locked += n; // soldados que acabaram de chegar não se movem de novo neste turno
-    this._log(i, `${this._name(i)} moveu ${n} soldado(s) de ${TERR_BY_ID[a.from].name} para ${TERR_BY_ID[a.to].name}.`, 'move', { from: a.from, to: a.to });
-    this._checkWin(i);
+    this.fortifies++;
+    this._log(i, `${this._name(i)} moveu ${n} soldado(s) de ${TERR_BY_ID[a.from].name} para ${TERR_BY_ID[a.to].name}.`, 'move', { from: a.from, to: a.to, n });
+    if (this._checkWin(i)) return ok();
+    // remanejamentos esgotados e nenhuma carta de ação jogável aqui: o turno passa sozinho
+    const cardsLeft = this.expanded && this.players[i].actionHand.some((c) => ACTION_CARDS[c.type].phases.includes('fortify'));
+    if (this.fortifies >= FORTIFY_PER_TURN && !cardsLeft) this._endTurn(i);
     return ok();
   }
 
@@ -561,10 +668,19 @@ class Game {
     this._checkWin(i);
     if (this.phase === 'over') return ok();
     let next = i;
+    const before = this.round;
     do {
       next = (next + 1) % this.players.length;
-      if (next === 0) this.round++;
+      if (next === this.first) this.round++; // a rodada vira quando a vez volta a quem abriu a partida
     } while (!this.players[next].alive);
+    if (this.maxRounds && this.round > this.maxRounds) {
+      this.round = this.maxRounds;
+      this._endByLimit();
+      return ok();
+    }
+    if (this.round !== before && this.maxRounds && this.round === this.maxRounds) {
+      this._log(null, 'Última rodada! Ao final dela vence quem tiver mais pontos.', 'lastRound');
+    }
     this._beginTurn(next);
     return ok();
   }
@@ -651,7 +767,7 @@ class Game {
     if (dmg < 1) return fail('O alvo só tem 1 soldado: não pode ser atingido.');
     t.armies -= dmg;
     f.fired = true;
-    this._log(i, `${p.name} disparou ${def.name} de ${TERR_BY_ID[a.from].name} em ${TERR_BY_ID[a.to].name} (${this._name(t.owner)}): ${dmg} baixa(s).`, 'fire', { from: a.from, to: a.to });
+    this._log(i, `${p.name} disparou ${def.name} de ${TERR_BY_ID[a.from].name} em ${TERR_BY_ID[a.to].name} (${this._name(t.owner)}): ${dmg} baixa(s).`, 'fire', { from: a.from, to: a.to, n: dmg, def: t.owner });
     return ok();
   }
 
@@ -723,7 +839,7 @@ class Game {
         f.armies -= n;
         t.armies += n;
         t.locked += n;
-        this._log(i, `${p.name} mobilizou ${n} soldado(s) de ${TERR_BY_ID[a.from].name} para ${TERR_BY_ID[a.to].name}.`, 'move', { from: a.from, to: a.to });
+        this._log(i, `${p.name} mobilizou ${n} soldado(s) de ${TERR_BY_ID[a.from].name} para ${TERR_BY_ID[a.to].name}.`, 'move', { from: a.from, to: a.to, n });
         break;
       }
       default: return fail('Carta desconhecida.');
@@ -737,17 +853,7 @@ class Game {
   autoPlay(i) {
     const p = this.players[i];
     if (!p || !p.alive || this.phase === 'over') return fail('Nada a fazer.');
-    const dump = () => {
-      const mine = this._owned(i);
-      const border = mine.filter((id) => ADJ[id].some((n) => this.terr[n].owner !== i));
-      const spots = border.length ? border : mine;
-      while (p.pool > 0 && spots.length) {
-        const min = Math.min(...spots.map((id) => this.terr[id].armies));
-        const weakest = spots.filter((id) => this.terr[id].armies === min);
-        this.terr[weakest[Math.floor(this.rng() * weakest.length)]].armies += 1;
-        p.pool -= 1;
-      }
-    };
+    const dump = () => this._dumpPool(i);
     const announce = () => this._log(i, `${p.name} demorou: jogada automática.`, 'auto');
     if (this.phase === 'setup') {
       if (p.ready) return fail('Esse jogador já está pronto.');
@@ -787,7 +893,9 @@ class Game {
       phase: this.phase,
       turn: this.turn,
       round: this.round,
+      maxRounds: this.maxRounds,
       winner: this.winner,
+      endReason: this.endReason,
       players: this.players.map((p, idx) => ({
         idx,
         name: p.name,
@@ -802,7 +910,8 @@ class Game {
         weapons: p.weapons,
         actionCards: p.actionHand.length,
         territories: this._ownedCount(idx),
-        armies: TERR_IDS.reduce((s, id) => s + (this.terr[id].owner === idx ? this.terr[id].armies : 0), 0),
+        armies: this._armies(idx),
+        score: this._score(idx),
         objective: over ? p.objective.text : undefined,
       })),
       terr,
@@ -821,7 +930,10 @@ class Game {
       turnInfo: this.turnInfo,
       deckCount: this.deck.length,
       tradeCount: this.tradeCount,
+      fortifiesLeft: Math.max(0, FORTIFY_PER_TURN - this.fortifies),
       nextTrade: this._nextTradeValue(),
+      startedAt: this.startedAt,
+      endedAt: this.endedAt,
       log: this.log.slice(-60),
       logSeq: this.logSeq,
     };

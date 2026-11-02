@@ -1,5 +1,6 @@
 'use strict';
 
+const os = require('os');
 const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
@@ -11,13 +12,15 @@ const { Game } = require('./game');
 const PORT = process.env.PORT || 3000;
 const { MAX_PLAYERS } = data;
 const ROOM_TTL_MS = 6 * 60 * 60 * 1000; // salas inativas por 6h são removidas
-// Tempo máximo de cada fase (preparação, reforço, ataque, remanejamento): nunca passa de 60 s.
-// TURN_SECONDS só pode diminuir o limite (útil em testes).
+// Tempo máximo de cada fase: data.PHASE_SECONDS (preparação 40 s, reforço 30 s, ataque 45 s,
+// remanejamento 20 s), nunca acima de 60 s. TURN_SECONDS só pode diminuir o limite (útil em testes).
 const TURN_SECONDS = Math.min(60, Math.max(1, Number(process.env.TURN_SECONDS) || 60));
+const phaseMs = (phase) => Math.min(TURN_SECONDS, data.PHASE_SECONDS[phase] || TURN_SECONDS) * 1000;
+const ROUNDS_ALLOWED = data.ROUND_OPTIONS.map((o) => o.rounds);
 // Quem está desconectado joga automaticamente após AFK_DELAY_MS; quem já estourou o tempo (ausente) mas
 // continua conectado tem AFK_GRACE_MS de tolerância no turno seguinte (qualquer jogada tira a ausência).
-const AFK_DELAY_MS = Math.max(300, Number(process.env.AFK_DELAY_MS) || 4000);
-const AFK_GRACE_MS = Math.max(300, Number(process.env.AFK_GRACE_MS) || 10000);
+const AFK_DELAY_MS = Math.max(300, Number(process.env.AFK_DELAY_MS) || 3000);
+const AFK_GRACE_MS = Math.max(300, Number(process.env.AFK_GRACE_MS) || 6000);
 
 const app = express();
 const server = http.createServer(app);
@@ -25,6 +28,12 @@ const io = new Server(server, { pingInterval: 10000, pingTimeout: 20000 });
 
 app.use(express.static(path.join(__dirname, '..', 'public')));
 app.get('/healthz', (_req, res) => res.send('ok'));
+// endereços IPv4 do servidor (mostrados na barra de status do jogo)
+app.get('/api/server', (_req, res) => {
+  const ips = Object.values(os.networkInterfaces()).flat()
+    .filter((n) => n && n.family === 'IPv4' && !n.internal).map((n) => n.address);
+  res.json({ ips, port: Number(PORT), hostname: os.hostname() });
+});
 app.get('/api/map', (_req, res) => {
   res.json({
     territories: data.TERRITORIES,
@@ -33,7 +42,11 @@ app.get('/api/map', (_req, res) => {
     colors: data.COLORS,
     tradeSeq: data.TRADE_SEQ,
     maxPlayers: MAX_PLAYERS,
+    fortifyPerTurn: data.FORTIFY_PER_TURN,
     turnSeconds: TURN_SECONDS,
+    phaseSeconds: Object.fromEntries(Object.keys(data.PHASE_SECONDS).map((k) => [k, phaseMs(k) / 1000])),
+    roundOptions: data.ROUND_OPTIONS,
+    escalationEvery: data.ESCALATION_EVERY,
     startArmies: data.TOTAL_ARMIES,
     objectives: data.OBJECTIVES,
     expanded: {
@@ -68,6 +81,7 @@ function publicRoom(room) {
     code: room.code,
     started: !!room.game,
     expanded: room.expanded,
+    rounds: room.rounds,
     players: room.players.map((p, i) => ({
       idx: i,
       name: p.name,
@@ -93,7 +107,7 @@ function armTimer(room) {
   if (key === room.timerKey) return;
   clearTimeout(room.timer);
   room.timerKey = key;
-  let ms = TURN_SECONDS * 1000;
+  let ms = phaseMs(g.phase);
   if (g.phase !== 'setup') {
     const rp = room.players[g.turn];
     if (!(rp && rp.connected)) ms = Math.min(ms, AFK_DELAY_MS);
@@ -136,7 +150,7 @@ function broadcast(room) {
     if (!sock) return;
     sock.emit('room', { ...info, me: { idx: i, isHost: p.token === room.hostToken } });
     if (room.game) {
-      sock.emit('state', { ...room.game.view(i), timer: { deadline: room.deadline, now: Date.now(), total: room.timerMs || TURN_SECONDS * 1000 } });
+      sock.emit('state', { ...room.game.view(i), timer: { deadline: room.deadline, now: Date.now(), total: room.timerMs || phaseMs(room.game.phase) } });
     }
   });
 }
@@ -170,6 +184,7 @@ io.on('connection', (socket) => {
     if (!name) return cb({ ok: false, error: 'Digite seu nome.' });
     const room = {
       code: makeCode(), hostToken: null, players: [], game: null, chat: [], touched: Date.now(), expanded: true,
+      rounds: data.DEFAULT_ROUNDS,
       timer: null, timerKey: '', deadline: 0,
     };
     const player = { token: crypto.randomUUID(), name, socketId: null, connected: false };
@@ -233,6 +248,7 @@ io.on('connection', (socket) => {
     if (player.token !== room.hostToken) return reply({ ok: false, error: 'Só o anfitrião pode mudar as regras.' });
     if (room.game) return reply({ ok: false, error: 'A partida já começou.' });
     if (payload && typeof payload.expanded === 'boolean') room.expanded = payload.expanded;
+    if (payload && ROUNDS_ALLOWED.includes(payload.rounds)) room.rounds = payload.rounds;
     reply({ ok: true });
     broadcast(room);
   });
@@ -245,7 +261,7 @@ io.on('connection', (socket) => {
     if (room.game) return reply({ ok: false, error: 'A partida já começou.' });
     room.players = room.players.filter((p) => p.connected);
     if (room.players.length < 2) return reply({ ok: false, error: 'São necessários ao menos 2 jogadores conectados.' });
-    room.game = new Game(room.players.map((p) => p.name), Math.random, { expanded: room.expanded });
+    room.game = new Game(room.players.map((p) => p.name), Math.random, { expanded: room.expanded, maxRounds: room.rounds });
     reply({ ok: true });
     broadcast(room);
   });
@@ -263,6 +279,14 @@ io.on('connection', (socket) => {
     }
     reply(res);
     if (res.ok) broadcast(room);
+  });
+
+  // Histórico completo da partida (página "Histórico")
+  socket.on('history', (_p, cb) => {
+    if (typeof cb !== 'function') return;
+    const { room } = findRoom(socket);
+    if (!room || !room.game) return cb({ ok: false, error: 'Partida não iniciada.' });
+    cb({ ok: true, log: room.game.log });
   });
 
   // O anfitrião joga automaticamente por um jogador desconectado
@@ -288,6 +312,9 @@ io.on('connection', (socket) => {
     reply({ ok: true });
     broadcast(room);
   });
+
+  // medição de latência: o cliente envia e mede o tempo até a resposta
+  socket.on('latency', (_p, cb) => { if (typeof cb === 'function') cb(Date.now()); });
 
   socket.on('chat', (text) => {
     const { room, player } = findRoom(socket);

@@ -31,11 +31,18 @@ Observações:
 - No plano gratuito o primeiro acesso após um período parado pode demorar ~1 minuto para acordar.
 - Jogadores que caem ou atualizam a página voltam sozinhos para o mesmo lugar (a sessão fica salva no navegador). Se alguém sumir de vez, o anfitrião pode usar **"Jogar por ele"** para a partida continuar.
 
+## Partidas rápidas
+
+- **Duração (opção do anfitrião na sala):** Relâmpago (6 rodadas), **Rápida (10 rodadas, padrão)**, Longa (15 rodadas) ou Clássica (sem limite). Com limite, se ninguém cumprir o objetivo até o fim da última rodada, vence quem tiver mais **pontos 🏅**: 1 por comunidade + o bônus de cada região inteira dominada (desempate: mais soldados). Todos jogam o mesmo número de turnos; a última rodada é anunciada na tela.
+- **Escalada:** a cada 3 rodadas todos ganham +1 soldado de reforço por turno (+1 na 3ª, +2 na 6ª…).
+- **Trocas de cartas mais valiosas:** 6, 8, 10, 12, 15, 20 e depois +5.
+- **Menos cliques:** "⚡ Distribuir automaticamente" na preparação e no reforço; ao distribuir tudo na preparação você fica pronto; no reforço o jogo passa sozinho para o ataque (se não houver troca de cartas possível nem carta de Reforço na mão); a ocupação é automática quando só há uma quantidade possível, e "Mover tudo"/"Mover o mínimo" ocupam com um clique; usados os 3 remanejamentos, o turno passa sozinho.
+
 ## Tempo de jogo, sons e animações
 
-- **Relógio:** cada fase (preparação, reforço, ataque, remanejamento) tem **no máximo 60 segundos**, com contagem regressiva na tela (amarela aos 20 s, vermelha e com "tiques" nos últimos 10 s).
+- **Relógio:** cada fase tem seu tempo: **preparação 40 s, reforço 30 s, ataque 45 s, remanejamento 20 s** (ajuste em `PHASE_SECONDS`, em `server/data.js`), com contagem regressiva na tela (amarela aos 20 s, vermelha e com "tiques" nos últimos 10 s).
 - **Jogada automática:** se o tempo acabar, o servidor joga por quem não agiu: distribui os reforços nas comunidades de fronteira (começando pelas mais fracas), troca cartas se for obrigatório, resolve uma ocupação pendente e encerra o turno **sem atacar**.
-- **Ausente:** quem estoura o tempo fica marcado como *ausente*; nos turnos seguintes o jogo joga por essa pessoa após ~10 s, até ela clicar em **Voltei** ou jogar por conta própria. Jogadores desconectados são jogados automaticamente após ~4 s.
+- **Ausente:** quem estoura o tempo fica marcado como *ausente*; nos turnos seguintes o jogo joga por essa pessoa após ~6 s, até ela clicar em **Voltei** ou jogar por conta própria. Jogadores desconectados são jogados automaticamente após ~3 s.
 - **Sons:** efeitos sintetizados no navegador (WebAudio), sem arquivos de áudio: cliques, reforços, dados, golpes, conquista, tecnologia, armas, cartas, vitória, fim de tempo e mais. O botão 🔊 no canto inferior esquerdo liga/desliga e lembra a escolha.
 - **Animações:** números de soldados que sobem/descem sobre as comunidades, anéis na conquista, projéteis nos ataques e disparos, tremor nos alvos, cartas entrando na mão, relógio pulsando e confete na vitória. Respeita a preferência do sistema por *menos movimento*.
 - Variáveis opcionais do servidor (úteis em testes): `TURN_SECONDS` (só pode diminuir o limite de 60), `AFK_DELAY_MS` e `AFK_GRACE_MS`.
@@ -49,13 +56,13 @@ Observações:
 **Preparação:** as comunidades são sorteadas com 1 soldado cada; cada jogador distribui o restante dos seus soldados iniciais (total por jogador de 40/35/30/25/20/18/16/15/14 para 2/3/4/5/6/7/8/9/10 jogadores, contando os já posicionados) ao mesmo tempo.
 
 **Turno:**
-1. **Reforço:** comunidades ÷ 2 (mínimo 3) + bônus de regiões + troca de cartas.
+1. **Reforço:** comunidades ÷ 2 (mínimo 3) + bônus de regiões + escalada (+1 a cada 3 rodadas) + troca de cartas.
 2. **Ataque:** o atacante rola até 3 dados (deixa sempre 1 soldado), o defensor rola até 3 dados (um por soldado). Comparação dos maiores dados em pares; **empate favorece a defesa**. Ao dominar, move-se no mínimo o número de dados rolados.
 3. **Remanejamento:** mover entre comunidades vizinhas suas; soldados que acabaram de chegar não se movem de novo no turno.
 
-**Cartas de comunidade:** 42 cartas (▲ ■ ●) + 2 coringas. Quem domina ao menos 1 comunidade no turno ganha 1 carta. Troca de 3 iguais ou 3 diferentes (coringa vale por qualquer um) por 4, 6, 8, 10, 12, 15 e depois +5 soldados (sequência global). Cada carta de uma comunidade sua na troca dá +2 soldados nela. Com 5+ cartas a troca é obrigatória. Eliminar uma facção dá as cartas dela.
+**Cartas de comunidade:** 42 cartas (▲ ■ ●) + 2 coringas. Quem domina ao menos 1 comunidade no turno ganha 1 carta. Troca de 3 iguais ou 3 diferentes (coringa vale por qualquer um) por 6, 8, 10, 12, 15, 20 e depois +5 soldados (sequência global). Cada carta de uma comunidade sua na troca dá +2 soldados nela. Com 5+ cartas a troca é obrigatória. Eliminar uma facção dá as cartas dela.
 
-**Objetivos (18 cartas, secretas):** dominar Zona Oeste + Zona Sul; Zona Oeste + Baixada; Zona Norte + Baixada; Zona Norte + Litoral; Centro + Zona Sul + 1 região à escolha; Centro + Litoral + 1 região à escolha; 18 comunidades com 2+ soldados cada; 24 comunidades; ou destruir uma das 10 facções (se ela não está na partida, é a sua, ou outro jogador a elimina primeiro, o objetivo vira "24 comunidades"). Vence quem cumprir o objetivo durante o seu turno, ou a última facção restante.
+**Objetivos (18 cartas, secretas):** dominar Zona Oeste + Zona Sul; Zona Oeste + Baixada; Zona Norte + Baixada; Zona Norte + Litoral; Centro + Zona Sul + 1 região à escolha; Centro + Litoral + 1 região à escolha; 18 comunidades com 2+ soldados cada; 24 comunidades; ou destruir uma das 10 facções (se ela não está na partida, é a sua, ou outro jogador a elimina primeiro, o objetivo vira "24 comunidades"). Vence quem cumprir o objetivo durante o seu turno, ou a última facção restante, ou (com limite de rodadas) quem tiver mais pontos ao fim da última rodada.
 
 ## Modo expandido (opcional)
 

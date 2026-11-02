@@ -42,6 +42,10 @@
         <input type="checkbox" id="expandedChk">
         <span><b>Modo expandido</b><small>Árvore de tecnologia, armas construíveis e cartas de ação</small></span>
       </label>
+      <label class="toggle rounds-row" id="roundsRow">
+        <span><b>Duração</b><small>Com limite, quem tiver mais pontos ao fim da última rodada vence</small></span>
+        <select id="roundsSel"></select>
+      </label>
       <p id="lobbyHint" class="hint"></p>
       <button id="startBtn" class="primary big">Iniciar partida</button>
       <button id="rulesLobbyBtn" class="link">📖 Ver regras</button>
@@ -54,41 +58,77 @@
     <header id="topbar" class="topbar"></header>
     <div class="game-layout">
       <div class="map-col">
-        <div class="map-wrap"><svg id="map" viewBox="0 0 1000 600" preserveAspectRatio="xMidYMid meet"></svg></div>
+        <div class="map-wrap">
+          <svg id="map" viewBox="0 0 1000 600" preserveAspectRatio="xMidYMid meet"></svg>
+          <div id="ticker" class="ticker" aria-live="polite"></div>
+        </div>
         <div id="legend" class="legend"></div>
       </div>
       <aside class="side">
-        <div id="banner" class="banner"></div>
-        <div id="timer" class="timer hidden"><div id="timerFill" class="timer-fill"></div><span id="timerText"></span></div>
+        <div class="turn-box">
+          <div id="banner" class="banner"></div>
+          <div id="timer" class="timer hidden"><div id="timerFill" class="timer-fill"></div><span id="timerText"></span></div>
+        </div>
         <div id="actions" class="panel"></div>
-        <div id="research" class="panel hidden"></div>
         <div id="combat" class="panel combat hidden"></div>
+        <div class="panel kit">
+          <div class="tabs" id="kitTabs">
+            <button class="tab active" data-kit="obj">🎯 Objetivo</button>
+            <button class="tab" data-kit="cards">🃏 Cartas <span id="cardsCount" class="count"></span></button>
+            <button class="tab hidden" data-kit="acts">🎴 Ação <span id="actsCount" class="count"></span></button>
+            <button class="tab hidden" data-kit="res">🔬 Pesquisa</button>
+          </div>
+          <div class="kit-pane" data-pane="obj">
+            <div id="objective" class="objective"></div>
+            <button id="eyeBtn" class="link small">ocultar</button>
+          </div>
+          <div class="kit-pane hidden" data-pane="cards">
+            <div id="tradeStatus" class="trade-status"></div>
+            <div id="hand" class="hand"></div>
+            <div id="tradeGuide" class="trade-guide"></div>
+            <p id="tradeInfo" class="muted pane-note"></p>
+            <button id="tradeBtn" class="primary hidden">Trocar cartas</button>
+          </div>
+          <div class="kit-pane hidden" data-pane="acts">
+            <div id="actionHand" class="action-hand"></div>
+            <p id="actionInfo" class="muted pane-note"></p>
+          </div>
+          <div class="kit-pane hidden" data-pane="res" id="research"></div>
+        </div>
         <div id="players" class="panel"></div>
         <div class="panel">
-          <div class="panel-title">Seu objetivo <button id="eyeBtn" class="mini">ocultar</button></div>
-          <div id="objective" class="objective"></div>
-        </div>
-        <div class="panel">
-          <div class="panel-title">Suas cartas <span id="tradeInfo" class="muted"></span></div>
-          <div id="hand" class="hand"></div>
-          <button id="tradeBtn" class="primary hidden">Trocar cartas</button>
-        </div>
-        <div id="actionPanel" class="panel hidden">
-          <div class="panel-title">Cartas de ação <span id="actionInfo" class="muted"></span></div>
-          <div id="actionHand" class="action-hand"></div>
-        </div>
-        <div class="panel">
           <div class="tabs">
-            <button id="tabLog" class="tab active">Registro</button>
+            <button id="tabLog" class="tab active">Jogadas</button>
             <button id="tabChat" class="tab">Chat</button>
           </div>
           <div id="logBox" class="logbox"></div>
+          <button id="historyLink" class="link small history-link">📜 Ver histórico completo</button>
           <form id="chatForm" class="chat-form hidden">
             <input id="chatInput" maxlength="200" placeholder="Mensagem…" autocomplete="off">
             <button class="primary">Enviar</button>
           </form>
         </div>
       </aside>
+    </div>
+  </section>
+
+  <!-- HISTÓRICO -->
+  <section id="history" class="history hidden" aria-label="Histórico da partida">
+    <div class="history-inner">
+      <header class="history-head">
+        <button id="historyBack" class="mini">← Voltar ao mapa</button>
+        <h2>📜 Histórico da partida</h2>
+        <span id="historyCount" class="muted"></span>
+      </header>
+      <div id="historyStats" class="hstats"></div>
+      <div class="hfilters">
+        <div id="historyKinds" class="hkinds"></div>
+        <div class="hfilter-row">
+          <select id="historyPlayer"></select>
+          <input id="historySearch" placeholder="Buscar comunidade ou jogador…" autocomplete="off">
+        </div>
+      </div>
+      <div id="historyList" class="hlist"></div>
     </div>
   </section>
 

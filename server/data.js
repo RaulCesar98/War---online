@@ -146,13 +146,27 @@ const OBJECTIVES = [
 const SYMBOLS = ['triangulo', 'quadrado', 'circulo'];
 // total de soldados de cada jogador no início (contando 1 por comunidade já sorteada)
 const TOTAL_ARMIES = { 2: 40, 3: 35, 4: 30, 5: 25, 6: 20, 7: 18, 8: 16, 9: 15, 10: 14 };
-const TRADE_SEQ = [4, 6, 8, 10, 12, 15]; // depois disso: +5 a cada troca
+const TRADE_SEQ = [6, 8, 10, 12, 15, 20]; // depois disso: +5 a cada troca
+
+// ---------- ritmo da partida ----------
+// Tempo máximo de cada fase, em segundos (TURN_SECONDS no servidor só pode diminuir)
+const PHASE_SECONDS = { setup: 40, reinforce: 30, attack: 45, fortify: 20 };
+// Duração escolhida na sala (0 = sem limite). Ao fim da última rodada vence quem tiver mais pontos.
+const ROUND_OPTIONS = [
+  { rounds: 6, name: 'Relâmpago', desc: '6 rodadas' },
+  { rounds: 10, name: 'Rápida', desc: '10 rodadas' },
+  { rounds: 15, name: 'Longa', desc: '15 rodadas' },
+  { rounds: 0, name: 'Clássica', desc: 'sem limite de rodadas' },
+];
+const DEFAULT_ROUNDS = 10;
+const ESCALATION_EVERY = 3; // escalada: +1 soldado de reforço para todos a cada 3 rodadas
 
 // ======================= MODO EXPANDIDO =======================
 
 const PP_BASE = 2; // Pontos de Pesquisa base por turno
 const ACTION_HAND_MAX = 5;
 const BUILDS_PER_TURN = 1;
+const FORTIFY_PER_TURN = 3; // remanejamentos permitidos por turno (a carta Mobilização não conta)
 
 // Ramos da árvore de tecnologia
 const BRANCHES = {
@@ -210,5 +224,6 @@ const ACTION_CARDS = {
 
 module.exports = {
   CONTINENTS, TERRITORIES, EDGES, ADJ, COLORS, MAX_PLAYERS, OBJECTIVES, SYMBOLS, TOTAL_ARMIES, TRADE_SEQ,
-  PP_BASE, ACTION_HAND_MAX, BUILDS_PER_TURN, BRANCHES, TECHS, WEAPON_LINES, WEAPONS, ACTION_CARDS,
+  PHASE_SECONDS, ROUND_OPTIONS, DEFAULT_ROUNDS, ESCALATION_EVERY,
+  PP_BASE, ACTION_HAND_MAX, BUILDS_PER_TURN, FORTIFY_PER_TURN, BRANCHES, TECHS, WEAPON_LINES, WEAPONS, ACTION_CARDS,
 };

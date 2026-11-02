@@ -54,7 +54,7 @@ const must = (r, ctx) => assert(r && r.ok, `${ctx}: ${r && r.error}`);
     const mine = Object.entries(x.state.terr).filter(([, t]) => t.o === x.state.me.idx).map(([id]) => id);
     assert(!(await x.act({ type: 'ready' })).ok, 'não pode ficar pronto sem distribuir');
     must(await x.act({ type: 'place', territory: mine[0], n: x.state.me.pool }), 'place setup');
-    must(await x.act({ type: 'ready' }), 'ready');
+    assert(!(await x.act({ type: 'ready' })).ok, 'distribuir tudo já deixa pronto');
     await sleep(50);
   }
   await sleep(150);
@@ -67,7 +67,8 @@ const must = (r, ctx) => assert(r && r.ok, `${ctx}: ${r && r.error}`);
   // um turno completo pelo servidor
   const mine = Object.entries(cur.state.terr).filter(([, t]) => t.o === cur.state.me.idx).map(([id]) => id);
   must(await cur.act({ type: 'place', territory: mine[0], n: cur.state.me.pool }), 'place reinforce');
-  must(await cur.act({ type: 'endReinforce' }), 'endReinforce');
+  await sleep(150);
+  if (cur.state.phase === 'reinforce') must(await cur.act({ type: 'endReinforce' }), 'endReinforce');
   must(await cur.act({ type: 'endTurn' }), 'endTurn');
   await sleep(150);
   assert.notStrictEqual(a.state.turn, cur.state.me.idx, 'a vez deve passar');
@@ -113,7 +114,7 @@ const must = (r, ctx) => assert(r && r.ok, `${ctx}: ${r && r.error}`);
   for (const x of crowd) {
     const mine = Object.entries(x.state.terr).filter(([, t]) => t.o === x.state.me.idx).map(([id]) => id);
     must(await x.act({ type: 'place', territory: mine[0], n: x.state.me.pool }), `place ${x.name}`);
-    must(await x.act({ type: 'ready' }), `ready ${x.name}`);
+    assert(!(await x.act({ type: 'ready' })).ok, `ready automático ${x.name}`);
   }
   await sleep(300);
   assert.strictEqual(crowd[0].state.phase, 'reinforce', 'a guerra começa quando os 10 estão prontos');

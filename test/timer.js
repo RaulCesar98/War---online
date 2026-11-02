@@ -60,7 +60,7 @@ async function room(url, names) {
     // Ana joga normalmente (e não pode ser marcada ausente); Bia e Caio ficam parados
     const mine = Object.entries(a.state.terr).filter(([, t]) => t.o === a.state.me.idx).map(([id]) => id);
     must(await a.act({ type: 'place', territory: mine[0], n: a.state.me.pool }), 'place');
-    must(await a.act({ type: 'ready' }), 'ready');
+    // distribuir tudo já deixa pronto
     await sleep(2600);
     assert.notStrictEqual(a.state.phase, 'setup', 'a preparação deve terminar sozinha quando o tempo acaba');
     assert(a.state.players.every((p) => p.pool === 0 || p.idx === a.state.turn), 'todos os soldados iniciais foram distribuídos (só quem joga agora tem reforço)');
@@ -100,7 +100,6 @@ async function room(url, names) {
     e.socket.disconnect();
     const mine = Object.entries(d.state.terr).filter(([, t]) => t.o === d.state.me.idx).map(([id]) => id);
     must(await d.act({ type: 'place', territory: mine[0], n: d.state.me.pool }), 'place');
-    must(await d.act({ type: 'ready' }), 'ready');
     await sleep(2600);
     assert.notStrictEqual(d.state.phase, 'setup', 'a partida começa mesmo com um jogador desconectado');
     const r0 = d.state.round;
@@ -118,6 +117,7 @@ async function room(url, names) {
   try {
     const map = await (await fetch('http://localhost:3203/api/map')).json();
     assert.strictEqual(map.turnSeconds, 60, 'o limite é de no máximo 60 segundos');
+    assert.deepStrictEqual(map.phaseSeconds, { setup: 40, reinforce: 30, attack: 45, fortify: 20 }, 'tempo de cada fase');
     console.log('✔ limite máximo de 60 s');
   } finally {
     server3.kill();
