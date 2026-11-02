@@ -73,10 +73,11 @@ class Game {
     this.tradeCount = 0;
     this.turnInfo = null;
     this.log = [];
+    this.logSeq = 0;
 
     this.players = names.map((name, i) => ({
       name, color: i, alive: true, cards: [], objective: null, pool: 0, ready: false,
-      pp: 0, techs: [], weapons: [], actionHand: [], intel: [],
+      pp: 0, techs: [], weapons: [], actionHand: [], intel: [], afk: false,
     }));
 
     // Distribui todas as comunidades igualmente, com 1 soldado em cada
@@ -116,8 +117,9 @@ class Game {
 
   // ---------- utilidades ----------
 
-  _log(p, t) {
-    this.log.push({ p, t });
+  _log(p, t, k, m) {
+    this.logSeq += 1;
+    this.log.push({ p, t, k, m, n: this.logSeq });
     if (this.log.length > 150) this.log.shift();
   }
 
@@ -229,7 +231,7 @@ class Game {
     this.phase = 'over';
     this.winner = i;
     this.pendingMove = null;
-    this._log(i, `${this._name(i)} venceu a partida: ${why}!`);
+    this._log(i, `${this._name(i)} venceu a partida: ${why}!`, 'win');
     return true;
   }
 
@@ -239,6 +241,12 @@ class Game {
     if (!a || typeof a.type !== 'string') return fail('Ação inválida.');
     if (this.phase === 'over') return fail('A partida já terminou.');
     if (!this.players[i] || !this.players[i].alive) return fail('Você foi eliminado.');
+    const res = this._dispatch(i, a);
+    if (res.ok && this.players[i]) this.players[i].afk = false; // jogou por conta própria: deixa de estar ausente
+    return res;
+  }
+
+  _dispatch(i, a) {
     switch (a.type) {
       case 'place': return this._place(i, a);
       case 'ready': return this._ready(i);
@@ -249,6 +257,7 @@ class Game {
       case 'endAttack': return this._endAttack(i);
       case 'fortify': return this._fortify(i, a);
       case 'endTurn': return this._endTurn(i);
+      case 'back': return ok(); // "voltei": act() tira o jogador do estado de ausente
       case 'research': return this._research(i, a);
       case 'unlock': return this._unlock(i, a);
       case 'build': return this._build(i, a);
@@ -286,7 +295,7 @@ class Game {
     if (p.ready) return fail('Você já está pronto.');
     if (p.pool > 0) return fail(`Distribua todos os soldados (faltam ${p.pool}).`);
     p.ready = true;
-    this._log(i, `${p.name} está pronto.`);
+    this._log(i, `${p.name} está pronto.`, 'ready');
     if (this.players.every((q) => q.ready)) this._startPlay();
     return ok();
   }
@@ -294,7 +303,7 @@ class Game {
   _startPlay() {
     this.round = 1;
     const first = Math.floor(this.rng() * this.players.length);
-    this._log(null, 'A guerra começou!');
+    this._log(null, 'A guerra começou!', 'start');
     this._beginTurn(first);
   }
 
@@ -320,7 +329,7 @@ class Game {
     this.turnInfo = { base, continents, tech, total, pp: 0 };
     p.pool += total;
     const extra = continents.length ? ` + regiões (${continents.map((x) => `${CONTINENTS[x.c].name} +${x.bonus}`).join(', ')})` : '';
-    this._log(i, `Vez de ${this._name(i)}: ${total} soldados de reforço (${count} comunidades → ${base}${extra}${tech ? ` + tecnologia ${tech}` : ''}).`);
+    this._log(i, `Vez de ${this._name(i)}: ${total} soldados de reforço (${count} comunidades → ${base}${extra}${tech ? ` + tecnologia ${tech}` : ''}).`, 'turn', { player: i });
 
     if (this.expanded) {
       const pp = PP_BASE + Math.floor(count / 6) + continents.length
@@ -333,11 +342,11 @@ class Game {
         const weakest = mine.filter((id) => this.terr[id].armies === min);
         const id = weakest[Math.floor(this.rng() * weakest.length)];
         this.terr[id].armies += 1;
-        this._log(i, `Os vigias reforçaram ${TERR_BY_ID[id].name} (+1).`);
+        this._log(i, `Os vigias reforçaram ${TERR_BY_ID[id].name} (+1).`, 'place', { to: id });
       }
       let drawn = 0;
       for (let k = 0; k < 1 + (this._tech(i, 'agentes') ? 1 : 0); k++) if (this._drawAction(i)) drawn++;
-      this._log(i, `${p.name} recebeu ${pp} PP${drawn ? ` e ${drawn} carta(s) de ação` : ''}.`);
+      this._log(i, `${p.name} recebeu ${pp} PP${drawn ? ` e ${drawn} carta(s) de ação` : ''}.`, 'draw');
     }
   }
 
@@ -364,7 +373,7 @@ class Game {
         bonusTerr.push(TERR_BY_ID[c.territory].name);
       }
     });
-    this._log(i, `${p.name} trocou 3 cartas por ${armies} soldados${bonusTerr.length ? ` (+2 em ${bonusTerr.join(', ')})` : ''}.`);
+    this._log(i, `${p.name} trocou 3 cartas por ${armies} soldados${bonusTerr.length ? ` (+2 em ${bonusTerr.join(', ')})` : ''}.`, 'trade');
     return ok();
   }
 
@@ -447,10 +456,10 @@ class Game {
       t.owner = i;
       t.armies = 0;
       t.locked = 0;
-      if (t.w) { this._log(i, `${WEAPONS[t.w].name} em ${dest} foi destruído quando a comunidade foi dominada.`); t.w = null; }
+      if (t.w) { this._log(i, `${WEAPONS[t.w].name} em ${dest} foi destruído quando a comunidade foi dominada.`, 'destroy', { to: a.to }); t.w = null; }
       this.conqueredThisTurn = true;
       this.pendingMove = { from: a.from, to: a.to, min: diceUsed, max: f.armies - 1 };
-      this._log(i, `${p.name} dominou ${dest}!`);
+      this._log(i, `${p.name} dominou ${dest}!`, 'conquer', { to: a.to });
       if (this._ownedCount(defender) === 0) this._eliminate(i, defender);
     }
     return ok();
@@ -466,7 +475,7 @@ class Game {
     v.cards = [];
     this.actionDiscard.push(...v.actionHand);
     v.actionHand = [];
-    this._log(killer, `${k.name} eliminou ${v.name}${taken ? ` e ficou com suas ${taken} carta(s)` : ''}!`);
+    this._log(killer, `${k.name} eliminou ${v.name}${taken ? ` e ficou com suas ${taken} carta(s)` : ''}!`, 'eliminate');
     if (k.objective.type === 'destroy' && k.objective.target === victim) k.objective.done = true;
     // quem tinha de destruir essa facção, mas não foi quem o eliminou, troca de objetivo
     this.players.forEach((p, idx) => {
@@ -487,10 +496,10 @@ class Game {
     this.terr[pm.from].armies -= n;
     this.terr[pm.to].armies = n;
     this.pendingMove = null;
-    this._log(i, `${this._name(i)} ocupou ${TERR_BY_ID[pm.to].name} com ${n} soldado(s).`);
+    this._log(i, `${this._name(i)} ocupou ${TERR_BY_ID[pm.to].name} com ${n} soldado(s).`, 'occupy', { to: pm.to });
     if (this._tech(i, 'blitzkrieg')) {
       this.terr[pm.to].armies += 1;
-      this._log(i, 'Ocupação relâmpago: +1 soldado grátis na comunidade dominada.');
+      this._log(i, 'Ocupação relâmpago: +1 soldado grátis na comunidade dominada.', 'place', { to: pm.to });
     }
     this._checkWin(i);
     return ok();
@@ -504,7 +513,7 @@ class Game {
     const card = this.deck.pop();
     if (!card) return;
     this.players[i].cards.push(card);
-    this._log(i, `${this._name(i)} recebeu uma carta de comunidade por dominar comunidades.`);
+    this._log(i, `${this._name(i)} recebeu uma carta de comunidade por dominar comunidades.`, 'draw');
   }
 
   _endAttack(i) {
@@ -536,7 +545,7 @@ class Game {
     f.armies -= n;
     t.armies += n;
     t.locked += n; // soldados que acabaram de chegar não se movem de novo neste turno
-    this._log(i, `${this._name(i)} moveu ${n} soldado(s) de ${TERR_BY_ID[a.from].name} para ${TERR_BY_ID[a.to].name}.`);
+    this._log(i, `${this._name(i)} moveu ${n} soldado(s) de ${TERR_BY_ID[a.from].name} para ${TERR_BY_ID[a.to].name}.`, 'move', { from: a.from, to: a.to });
     this._checkWin(i);
     return ok();
   }
@@ -581,7 +590,7 @@ class Game {
     if (p.pp < def.cost) return fail(`Pontos de Pesquisa insuficientes (${p.pp}/${def.cost}).`);
     p.pp -= def.cost;
     p.techs.push(a.tech);
-    this._log(i, `${p.name} pesquisou ${def.name}.`);
+    this._log(i, `${p.name} pesquisou ${def.name}.`, 'tech');
     return ok();
   }
 
@@ -599,7 +608,7 @@ class Game {
     if (p.pp < def.cost) return fail(`Pontos de Pesquisa insuficientes (${p.pp}/${def.cost}).`);
     p.pp -= def.cost;
     p.weapons.push(a.weapon);
-    this._log(i, `${p.name} desbloqueou a arma ${def.name}.`);
+    this._log(i, `${p.name} desbloqueou a arma ${def.name}.`, 'unlock');
     return ok();
   }
 
@@ -617,7 +626,7 @@ class Game {
     t.armies -= def.build;
     t.w = a.weapon;
     this.buff.built++;
-    this._log(i, `${p.name} construiu ${def.name} em ${TERR_BY_ID[a.territory].name} (−${def.build} soldados).`);
+    this._log(i, `${p.name} construiu ${def.name} em ${TERR_BY_ID[a.territory].name} (−${def.build} soldados).`, 'build', { to: a.territory });
     return ok();
   }
 
@@ -642,7 +651,7 @@ class Game {
     if (dmg < 1) return fail('O alvo só tem 1 soldado: não pode ser atingido.');
     t.armies -= dmg;
     f.fired = true;
-    this._log(i, `${p.name} disparou ${def.name} de ${TERR_BY_ID[a.from].name} em ${TERR_BY_ID[a.to].name} (${this._name(t.owner)}): ${dmg} baixa(s).`);
+    this._log(i, `${p.name} disparou ${def.name} de ${TERR_BY_ID[a.from].name} em ${TERR_BY_ID[a.to].name} (${this._name(t.owner)}): ${dmg} baixa(s).`, 'fire', { from: a.from, to: a.to });
     return ok();
   }
 
@@ -663,17 +672,17 @@ class Game {
     switch (card.type) {
       case 'reforco':
         p.pool += 3;
-        this._log(i, `${p.name} jogou ${def.name}: +3 soldados.`);
+        this._log(i, `${p.name} jogou ${def.name}: +3 soldados.`, 'card');
         break;
       case 'pesquisa':
         p.pp += 4;
-        this._log(i, `${p.name} jogou ${def.name}: +4 PP.`);
+        this._log(i, `${p.name} jogou ${def.name}: +4 PP.`, 'card');
         break;
       case 'espionagem': {
         const j = targetPlayer();
         if (j < 0) return fail('Escolha um adversário.');
         p.intel.push({ player: j, text: this.players[j].objective.text });
-        this._log(i, `${p.name} espionou ${this._name(j)}.`);
+        this._log(i, `${p.name} espionou ${this._name(j)}.`, 'spy');
         break;
       }
       case 'sabotagem': {
@@ -682,12 +691,12 @@ class Game {
         if (t.w === 'antiaereo') return fail(`O alvo tem ${WEAPONS.antiaereo.name} e é imune.`);
         const name = TERR_BY_ID[a.territory].name;
         if (t.w) {
-          this._log(i, `${p.name} sabotou ${name}: ${WEAPONS[t.w].name} destruído!`);
+          this._log(i, `${p.name} sabotou ${name}: ${WEAPONS[t.w].name} destruído!`, 'sabotage', { to: a.territory });
           t.w = null;
         } else if (t.armies > 1) {
           const lost = Math.min(2, t.armies - 1);
           t.armies -= lost;
-          this._log(i, `${p.name} sabotou ${name} (${this._name(t.owner)}): ${lost} soldado(s) eliminado(s).`);
+          this._log(i, `${p.name} sabotou ${name} (${this._name(t.owner)}): ${lost} soldado(s) eliminado(s).`, 'sabotage', { to: a.territory });
         } else {
           return fail('Não há nada para sabotar nessa comunidade.');
         }
@@ -697,12 +706,12 @@ class Game {
         const j = targetPlayer();
         if (j < 0) return fail('Escolha um adversário.');
         if (!this._truced(j, i)) this.truces.push({ by: i, against: j });
-        this._log(i, `${p.name} firmou trégua: ${this._name(j)} não pode atacá-lo até o próximo turno dele.`);
+        this._log(i, `${p.name} firmou trégua: ${this._name(j)} não pode atacá-lo até o próximo turno dele.`, 'truce');
         break;
       }
       case 'ofensiva':
         this.buff.ofensiva = true;
-        this._log(i, `${p.name} declarou Ofensiva total neste turno!`);
+        this._log(i, `${p.name} declarou Ofensiva total neste turno!`, 'rage');
         break;
       case 'mobilizacao': {
         const f = this.terr[a.from];
@@ -714,7 +723,7 @@ class Game {
         f.armies -= n;
         t.armies += n;
         t.locked += n;
-        this._log(i, `${p.name} mobilizou ${n} soldado(s) de ${TERR_BY_ID[a.from].name} para ${TERR_BY_ID[a.to].name}.`);
+        this._log(i, `${p.name} mobilizou ${n} soldado(s) de ${TERR_BY_ID[a.from].name} para ${TERR_BY_ID[a.to].name}.`, 'move', { from: a.from, to: a.to });
         break;
       }
       default: return fail('Carta desconhecida.');
@@ -730,17 +739,24 @@ class Game {
     if (!p || !p.alive || this.phase === 'over') return fail('Nada a fazer.');
     const dump = () => {
       const mine = this._owned(i);
-      while (p.pool > 0 && mine.length) {
-        this.terr[mine[Math.floor(this.rng() * mine.length)]].armies += 1;
+      const border = mine.filter((id) => ADJ[id].some((n) => this.terr[n].owner !== i));
+      const spots = border.length ? border : mine;
+      while (p.pool > 0 && spots.length) {
+        const min = Math.min(...spots.map((id) => this.terr[id].armies));
+        const weakest = spots.filter((id) => this.terr[id].armies === min);
+        this.terr[weakest[Math.floor(this.rng() * weakest.length)]].armies += 1;
         p.pool -= 1;
       }
     };
+    const announce = () => this._log(i, `${p.name} demorou: jogada automática.`, 'auto');
     if (this.phase === 'setup') {
       if (p.ready) return fail('Esse jogador já está pronto.');
+      announce();
       dump();
       return this._ready(i);
     }
     if (!this._isTurn(i)) return fail('Não é a vez desse jogador.');
+    announce();
     if (this.pendingMove) this._occupy(i, { n: this.pendingMove.min });
     if (this.phase === 'over') return ok();
     while (this._mustTrade(i)) {
@@ -780,6 +796,7 @@ class Game {
         cards: p.cards.length,
         pool: p.pool,
         ready: p.ready,
+        afk: p.afk,
         pp: p.pp,
         techs: p.techs,
         weapons: p.weapons,
@@ -806,6 +823,7 @@ class Game {
       tradeCount: this.tradeCount,
       nextTrade: this._nextTradeValue(),
       log: this.log.slice(-60),
+      logSeq: this.logSeq,
     };
   }
 }

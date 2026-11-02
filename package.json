@@ -6,7 +6,9 @@
   "scripts": {
     "start": "node server/index.js",
     "dev": "node --watch server/index.js",
-    "test": "node test/simulate.js"
+    "test": "node test/simulate.js",
+    "test:timer": "node test/timer.js",
+    "test:all": "node test/simulate.js && node test/timer.js"
   },
   "engines": {
     "node": ">=18"

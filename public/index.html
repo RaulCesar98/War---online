@@ -11,6 +11,7 @@
 <body>
   <div id="conn" class="conn hidden">Reconectando…</div>
   <div id="toast" class="toast"></div>
+  <button id="muteFab" class="fab" title="Ligar ou desligar os sons" aria-label="Sons">🔊</button>
 
   <!-- INÍCIO -->
   <section id="home" class="screen center hidden">
@@ -58,6 +59,7 @@
       </div>
       <aside class="side">
         <div id="banner" class="banner"></div>
+        <div id="timer" class="timer hidden"><div id="timerFill" class="timer-fill"></div><span id="timerText"></span></div>
         <div id="actions" class="panel"></div>
         <div id="research" class="panel hidden"></div>
         <div id="combat" class="panel combat hidden"></div>
@@ -93,6 +95,7 @@
   <div id="modal" class="modal hidden"><div id="modalBox" class="modal-box"></div></div>
 
   <script src="/socket.io/socket.io.js"></script>
+  <script src="sfx.js"></script>
   <script src="client.js"></script>
 </body>
 </html>

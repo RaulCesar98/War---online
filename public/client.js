@@ -39,6 +39,200 @@
   let treeTab = 'tech';
   const ACTIVE_PHASES = ['reinforce', 'attack', 'fortify'];
 
+  // ---------- relógio da fase, sons e animações ----------
+
+  const REDUCED = !!(window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches);
+  const sfx = (name) => { if (window.SFX) window.SFX.play(name); };
+  let fxLayer = null;
+  let lastSeq = null; // último evento do registro já tratado (sons/efeitos)
+  let lastChatLen = null;
+  let timerEnd = 0;
+  let timerTotal = 60000;
+  let lastTick = -1;
+  let bannerKey = '';
+  let bannerFlipUntil = 0;
+  let prevCardIds = null;
+  let prevActionIds = null;
+  const dealUntil = {};
+
+  function showMuteState() {
+    const b = $('#muteFab');
+    const m = !!(window.SFX && window.SFX.isMuted());
+    b.textContent = m ? '🔇' : '🔊';
+    b.classList.toggle('off', m);
+  }
+  $('#muteFab').onclick = () => {
+    window.SFX.setMuted(!window.SFX.isMuted());
+    showMuteState();
+    sfx('select');
+  };
+  showMuteState();
+  document.addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (b && !b.disabled && b.id !== 'muteFab') sfx('click');
+  });
+
+  // --- efeitos no mapa (camada SVG acima das comunidades) ---
+
+  function fxFloat(id, text, col) {
+    if (REDUCED || !fxLayer) return;
+    const t = TERR[id];
+    const e = el('text', { class: 'fx-float', x: t.x, y: t.y - 24, fill: col }, fxLayer);
+    e.textContent = text;
+    setTimeout(() => e.remove(), 1250);
+  }
+
+  function fxRing(id, col, big) {
+    if (REDUCED || !fxLayer) return;
+    const t = TERR[id];
+    const c = el('circle', { class: 'fx-ring', cx: t.x, cy: t.y, r: big ? 26 : 20, stroke: col }, fxLayer);
+    setTimeout(() => c.remove(), 900);
+  }
+
+  function fxClass(id, cls, ms) {
+    const g = nodeEls[id];
+    if (!g || REDUCED) return;
+    g.classList.remove(cls);
+    void g.getBBox();
+    g.classList.add(cls);
+    setTimeout(() => g.classList.remove(cls), ms);
+  }
+  const fxShake = (id) => fxClass(id, 'shake', 500);
+  const fxPulse = (id) => fxClass(id, 'pulse', 550);
+
+  function popBadge(id) {
+    const wb = nodeEls[id] && $('.wbadge', nodeEls[id]);
+    if (!wb || REDUCED) return;
+    wb.classList.add('pop');
+    setTimeout(() => wb.classList.remove('pop'), 700);
+  }
+
+  // projétil que atravessa o mapa de uma comunidade à outra
+  function fxShot(from, to, col, onEnd) {
+    if (REDUCED || !fxLayer || !g_anim()) { if (onEnd) onEnd(); return; }
+    const a = TERR[from];
+    const b = TERR[to];
+    const g = el('g', {}, fxLayer);
+    el('circle', { class: 'fx-shot', r: 6, fill: col, style: `color:${col}` }, g);
+    const anim = g.animate(
+      [{ transform: `translate(${a.x}px, ${a.y}px)` }, { transform: `translate(${b.x}px, ${b.y}px)` }],
+      { duration: 430, easing: 'ease-in', fill: 'forwards' },
+    );
+    anim.onfinish = () => { g.remove(); if (onEnd) onEnd(); };
+  }
+  const g_anim = () => typeof Element !== 'undefined' && typeof Element.prototype.animate === 'function';
+
+  function confetti() {
+    if (REDUCED) return;
+    const cv = document.createElement('canvas');
+    cv.className = 'confetti';
+    cv.width = window.innerWidth;
+    cv.height = window.innerHeight;
+    document.body.appendChild(cv);
+    const cx = cv.getContext('2d');
+    const parts = Array.from({ length: 150 }, () => ({
+      x: Math.random() * cv.width,
+      y: -20 - Math.random() * cv.height * 0.6,
+      vx: (Math.random() - 0.5) * 3,
+      vy: 2 + Math.random() * 4,
+      s: 6 + Math.random() * 8,
+      r: Math.random() * 6,
+      vr: (Math.random() - 0.5) * 0.3,
+      c: MAP.colors[Math.floor(Math.random() * MAP.colors.length)].hex,
+    }));
+    const t0 = performance.now();
+    (function frame(t) {
+      cx.clearRect(0, 0, cv.width, cv.height);
+      parts.forEach((p) => {
+        p.x += p.vx; p.y += p.vy; p.vy += 0.05; p.r += p.vr;
+        cx.save();
+        cx.translate(p.x, p.y);
+        cx.rotate(p.r);
+        cx.fillStyle = p.c;
+        cx.fillRect(-p.s / 2, -p.s / 2, p.s, p.s * 0.6);
+        cx.restore();
+      });
+      if (t - t0 < 4500) requestAnimationFrame(frame); else cv.remove();
+    }(t0));
+  }
+
+  // animação e sons de um combate recém-resolvido
+  function fxCombat(c) {
+    sfx('dice');
+    fxPulse(c.from);
+    fxShot(c.from, c.to, '#ff5a5f', () => {
+      fxShake(c.to);
+      fxRing(c.to, c.conquered ? '#7dffa8' : '#ff9d2e');
+    });
+    const hits = Math.min(4, c.lossA + c.lossD);
+    for (let k = 0; k < hits; k++) setTimeout(() => sfx('hit'), 480 + k * 130);
+  }
+
+  // sons e efeitos de cada tipo de evento do registro (valem para todos os jogadores)
+  function handleEvent(l) {
+    const m = l.m || {};
+    const col = l.p !== null && l.p !== undefined && S.players[l.p] ? color(S.players[l.p].color).hex : '#ffffff';
+    switch (l.k) {
+      case 'turn': sfx(m.player === me() ? 'turn' : 'phase'); break;
+      case 'start': sfx('start'); toast('A guerra começou!'); break;
+      case 'ready': sfx('ready'); break;
+      case 'conquer': setTimeout(() => sfx('conquer'), REDUCED ? 0 : 700); if (m.to) fxRing(m.to, col, true); break;
+      case 'destroy': sfx('sabotage'); if (m.to) { fxShake(m.to); fxFloat(m.to, '💥', '#ffffff'); } break;
+      case 'eliminate': sfx('eliminate'); toast(l.t); break;
+      case 'win':
+        sfx(S.winner === me() ? 'win' : 'lose');
+        if (S.winner === me()) confetti();
+        break;
+      case 'fire':
+        sfx('fire');
+        if (m.from && m.to) fxShot(m.from, m.to, '#ffb347', () => { fxRing(m.to, '#ff7a3c', true); fxShake(m.to); });
+        break;
+      case 'build': sfx('build'); if (m.to) { fxRing(m.to, '#f0b429'); popBadge(m.to); } break;
+      case 'tech': case 'unlock': sfx('tech'); break;
+      case 'card': sfx('draw'); break;
+      case 'draw': if (l.p === me()) sfx('draw'); break;
+      case 'trade': sfx('trade'); break;
+      case 'spy': sfx('spy'); break;
+      case 'sabotage': sfx('sabotage'); if (m.to) { fxRing(m.to, '#d93a3a', true); fxShake(m.to); } break;
+      case 'truce': sfx('truce'); break;
+      case 'rage': sfx('rage'); break;
+      case 'move': sfx('move'); if (m.from && m.to) fxShot(m.from, m.to, '#cfe8ff'); break;
+      case 'place': if (m.to) fxRing(m.to, '#7dffa8'); break;
+      case 'auto': sfx('timeout'); toast(l.t); break;
+      default:
+    }
+  }
+
+  function processEvents() {
+    if (lastSeq === null) { lastSeq = S.logSeq; return; }
+    const fresh = S.log.filter((l) => l.n > lastSeq);
+    lastSeq = S.logSeq;
+    if (fresh.length > 14) return; // muitos eventos de uma vez (reconexão): não toca tudo junto
+    fresh.forEach(handleEvent);
+  }
+
+  // --- relógio ---
+
+  function tickTimer() {
+    const box = $('#timer');
+    if (!S || S.phase === 'over' || !timerEnd) { box.classList.add('hidden'); return; }
+    const rem = Math.max(0, timerEnd - Date.now());
+    const secs = Math.ceil(rem / 1000);
+    const waitingMe = S.phase === 'setup' ? !myReady() : myTurn();
+    box.classList.remove('hidden');
+    $('#timerFill').style.width = `${Math.min(100, (rem / timerTotal) * 100)}%`;
+    box.classList.toggle('warn', secs <= 20 && secs > 10);
+    box.classList.toggle('urgent', secs <= 10);
+    const who = S.phase === 'setup' ? 'Preparação' : waitingMe ? 'Sua vez' : S.players[S.turn].name;
+    $('#timerText').textContent = `⏱ ${secs}s · ${who}`;
+    if (waitingMe && secs <= 10 && secs > 0 && secs !== lastTick) {
+      lastTick = secs;
+      sfx(secs <= 3 ? 'tickUrgent' : 'tick');
+    }
+    if (secs > 10) lastTick = -1;
+  }
+  setInterval(tickTimer, 250);
+
   // ---------- regras de alcance (espelham o servidor) ----------
 
   const distCache = {};
@@ -89,6 +283,7 @@
     el.textContent = msg;
     el.classList.toggle('err', !!err);
     el.classList.add('show');
+    if (err) sfx('error');
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => el.classList.remove('show'), 2600);
   }
@@ -124,9 +319,13 @@
   socket.on('disconnect', () => $('#conn').classList.remove('hidden'));
 
   socket.on('room', (r) => {
+    if (lastChatLen !== null && r.chat.length > lastChatLen) sfx('chat');
+    lastChatLen = r.chat.length;
     ROOM = r;
     if (!r.started) {
       S = null;
+      lastSeq = null;
+      timerEnd = 0;
       prevTerr = null;
       winDismissed = false;
       treeOpen = false;
@@ -143,7 +342,13 @@
   socket.on('state', (st) => {
     const first = !S;
     S = st;
-    if (first) { showScreen('game'); seenCombat = (S.lastCombat && S.lastCombat.id) || 0; chatSeen = ROOM ? ROOM.chat.length : 0; }
+    if (st.timer && st.timer.deadline) {
+      timerEnd = Date.now() + (st.timer.deadline - st.timer.now);
+      timerTotal = Math.max(1000, st.timer.total || 60000);
+    } else {
+      timerEnd = 0;
+    }
+    if (first) { lastSeq = null; prevCardIds = null; prevActionIds = null; showScreen('game'); seenCombat = (S.lastCombat && S.lastCombat.id) || 0; chatSeen = ROOM ? ROOM.chat.length : 0; }
     renderGame();
   });
 
@@ -250,9 +455,11 @@
       g.addEventListener('click', () => onTerritory(t.id));
       nodeEls[t.id] = g;
     });
+    fxLayer = el('g', { id: 'fx', 'pointer-events': 'none' }, svg);
   }
 
   function updateMap() {
+    let armiesUp = false;
     MAP.territories.forEach((t) => {
       const g = nodeEls[t.id];
       const s = S.terr[t.id];
@@ -263,8 +470,17 @@
       army.setAttribute('fill', c.text);
       const showing = S.pendingMove && S.pendingMove.to === t.id ? 0 : s.a;
       army.textContent = showing;
-      if (prevTerr && (prevTerr[t.id].a !== s.a || prevTerr[t.id].o !== s.o)) {
-        g.classList.remove('flash'); void g.getBBox(); g.classList.add('flash');
+      if (prevTerr) {
+        const pv = prevTerr[t.id];
+        if (pv.a !== s.a || pv.o !== s.o) { g.classList.remove('flash'); void g.getBBox(); g.classList.add('flash'); }
+        if (pv.o !== s.o) {
+          fxRing(t.id, c.hex, true);
+        } else if (pv.a !== s.a) {
+          const d = s.a - pv.a;
+          fxFloat(t.id, d > 0 ? `+${d}` : `${d}`, d > 0 ? '#7dffa8' : '#ff7a7a');
+          if (d > 0) armiesUp = true;
+        }
+        if (s.w && pv.w !== s.w) popBadge(t.id);
       }
       g.classList.remove('sel', 'sel2', 'target', 'ally', 'dim', 'fire-target');
       const wb = $('.wbadge', g);
@@ -297,6 +513,7 @@
         if (mode.to) nodeEls[mode.to].classList.add('sel2');
       }
     }
+    if (armiesUp) sfx('place');
     prevTerr = JSON.parse(JSON.stringify(S.terr));
 
     // legenda de regiões
@@ -341,6 +558,7 @@
     } else if (S.phase === 'reinforce') {
       return;
     }
+    sfx('select');
     renderGame();
   }
 
@@ -390,6 +608,7 @@
 
     renderTopbar();
     updateMap();
+    processEvents();
     renderBanner();
     renderActions();
     renderResearch();
@@ -400,6 +619,7 @@
     renderActionHand();
     renderLog();
     renderModal();
+    tickTimer();
 
     const mt = myTurn() && S.phase !== 'setup';
     if (mt && !wasMyTurn) toast('É a sua vez!');
@@ -445,9 +665,18 @@
     } else {
       html = `${dot(cur.color)} Vez de <b>${esc(cur.name)}</b><small>${{ reinforce: 'Posicionando reforços…', attack: 'Atacando…', fortify: 'Remanejando tropas…' }[S.phase]}</small>`;
     }
-    b.className = 'banner' + (mine ? ' mine' : '');
+    const key = `${S.phase}|${S.turn}|${S.round}`;
+    if (key !== bannerKey) { bannerKey = key; bannerFlipUntil = Date.now() + 700; }
+    if (meInfo().afk && S.phase !== 'over') {
+      html += '<small class="afk-note">⏸ Você está ausente (o tempo acabou e o jogo jogou por você). <button class="mini" data-back="1">Voltei</button></small>';
+    }
+    b.className = 'banner' + (mine ? ' mine' : '') + (Date.now() < bannerFlipUntil ? ' flip' : '');
     b.innerHTML = html;
   }
+
+  $('#banner').addEventListener('click', (e) => {
+    if (e.target.closest('[data-back]')) send({ type: 'back' });
+  });
 
   // ---------- ações ----------
 
@@ -631,6 +860,7 @@
       <div class="combat-row"><span class="who">${dot(c.defColor)}${esc(c.def)}</span>${def}</div>
       <div class="combat-sum">${esc(TERR[c.from].name)} ➜ ${esc(TERR[c.to].name)} · perdas: ataque <b>${c.lossA}</b>, defesa <b>${c.lossD}</b>${c.conquered ? ' · <b style="color:var(--ok)">CONQUISTADO!</b>' : ''}</div>
       ${c.notes && c.notes.length ? `<div class="combat-notes">⚡ ${c.notes.map(esc).join(' · ')}</div>` : ''}`;
+    if (isNew) fxCombat(c);
     if (isNew && c.conquered) toast(`${c.att} dominou ${TERR[c.to].name}!`);
   }
 
@@ -659,12 +889,14 @@
     if (!S.expanded || S.phase === 'setup') { panel.classList.add('hidden'); return; }
     panel.classList.remove('hidden');
     const hand = S.me.actionHand;
+    if (prevActionIds) hand.filter((c) => !prevActionIds.has(c.id)).forEach((c) => { dealUntil[c.id] = Date.now() + 800; });
+    prevActionIds = new Set(hand.map((c) => c.id));
     $('#actionInfo').textContent = `${hand.length}/${X.handMax} · baralho ${S.actionDeckCount}`;
     const canPlay = myTurn() && ACTIVE_PHASES.includes(S.phase) && !S.pendingMove;
     $('#actionHand').innerHTML = hand.length ? hand.map((c) => {
       const d = X.actionCards[c.type];
       const ok = canPlay && d.phases.includes(S.phase);
-      return `<div class="acard"><span class="ic">${d.icon}</span><div><b>${esc(d.name)}</b><small>${esc(d.desc)}</small></div>
+      return `<div class="acard ${dealUntil[c.id] > Date.now() ? 'deal' : ''}"><span class="ic">${d.icon}</span><div><b>${esc(d.name)}</b><small>${esc(d.desc)}</small></div>
         <button data-play="${c.id}" ${ok ? '' : 'disabled'}>Jogar</button></div>`;
     }).join('') : '<span class="muted">Sem cartas de ação. Você compra uma no início de cada turno.</span>';
   }
@@ -772,7 +1004,7 @@
         <span>${S.phase === 'setup' ? (p.ready ? '✔' : '…') : S.turn === p.idx && S.phase !== 'over' ? '▶' : ''}</span>
         <div class="stats"><span>🗺 <b>${p.territories}</b></span><span>⚔ <b>${p.armies}</b></span><span>🃏 <b>${p.cards}</b></span>${S.expanded ? `<span title="Pontos de Pesquisa">🔬 <b>${p.pp}</b></span><span title="Tecnologias + armas">🧪 <b>${p.techs.length + p.weapons.length}</b></span><span title="Cartas de ação">🎴 <b>${p.actionCards}</b></span>` : ''}${p.pool && S.phase !== 'setup' ? `<span>+<b>${p.pool}</b> a distribuir</span>` : ''}</div>
         <span></span><span></span>
-        ${offline || canAuto || truceNote(p.idx) ? `<div class="extra">${offline ? '<span class="badge off">offline</span>' : ''}${truceNote(p.idx)}${canAuto ? `<button class="mini" data-auto="${p.idx}">Jogar por ele</button>` : ''}</div>` : ''}
+        ${offline || canAuto || p.afk || truceNote(p.idx) ? `<div class="extra">${offline ? '<span class="badge off">offline</span>' : ''}${p.afk ? '<span class="badge off" title="Estourou o tempo; joga automaticamente até voltar">ausente</span>' : ''}${truceNote(p.idx)}${canAuto ? `<button class="mini" data-auto="${p.idx}">Jogar por ele</button>` : ''}</div>` : ''}
       </div>`;
     }).join('')}</div>`;
   }
@@ -810,10 +1042,12 @@
     if (!cards.length) {
       h.innerHTML = '<span class="empty">Você ainda não tem cartas. Domine ao menos uma comunidade por turno para ganhar uma.</span>';
     } else {
+      const fresh = prevCardIds ? cards.filter((c) => !prevCardIds.has(c.id)) : [];
+      fresh.forEach((c) => { dealUntil[c.id] = Date.now() + 800; });
       h.innerHTML = cards.map((c) => {
         const t = c.territory ? TERR[c.territory] : null;
         const owned = t && S.terr[c.territory].o === me();
-        return `<div class="tcard ${c.symbol === 'coringa' ? 'wild' : ''} ${handSel.has(c.id) ? 'sel' : ''}" data-card="${c.id}">
+        return `<div class="tcard ${c.symbol === 'coringa' ? 'wild' : ''} ${handSel.has(c.id) ? 'sel' : ''} ${dealUntil[c.id] > Date.now() ? 'deal' : ''}" data-card="${c.id}">
           ${owned ? '<span class="plus">+2</span>' : ''}
           <div class="band" style="background:${t ? MAP.continents[t.continent].color : '#fff'}"></div>
           <div class="sym">${SYM[c.symbol]}</div>
@@ -821,6 +1055,7 @@
         </div>`;
       }).join('');
     }
+    prevCardIds = new Set(cards.map((c) => c.id));
     const canNow = myTurn() && (S.phase === 'reinforce' || (S.phase === 'attack' && S.me.mustTrade));
     const chosen = cards.filter((c) => handSel.has(c.id));
     const btn = $('#tradeBtn');
@@ -942,6 +1177,8 @@
           <li><b>Remanejamento.</b> Mova soldados entre comunidades vizinhas suas, deixando 1 em cada origem. Soldados que acabaram de chegar não se movem de novo no turno.</li>
           <li><b>Fim do turno.</b> Se dominou ao menos uma comunidade, você recebe uma carta.</li>
         </ol>
+        <h3>Tempo de jogo</h3>
+        <p>Cada fase (preparação, reforço, ataque e remanejamento) tem <b>no máximo ${MAP.turnSeconds} segundos</b>, com um relógio na tela. Se o tempo acabar, o jogo <b>joga por você</b>: distribui seus reforços nas comunidades de fronteira, resolve uma ocupação pendente e encerra o turno, sem atacar. Quem estoura o tempo fica marcado como <b>ausente</b>: nos turnos seguintes a jogada automática vem logo (após uns 10 segundos) até você clicar em “Voltei” ou jogar por conta própria. Jogadores desconectados também são jogados automaticamente.</p>
         <h3>Como os dados são comparados</h3>
         <p>Ordene os dados de cada lado do maior para o menor e compare em pares. <b>Quem perde o par perde 1 soldado; em caso de empate, a defesa vence.</b></p>
         <div class="example">

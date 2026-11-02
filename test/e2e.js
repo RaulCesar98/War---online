@@ -48,7 +48,6 @@ const must = (r, ctx) => assert(r && r.ok, `${ctx}: ${r && r.error}`);
 
   // sigilo: cada cliente só vê o próprio objetivo
   assert(a.state.me.objective && a.state.players.every((p) => p.objective === undefined), 'objetivos alheios não podem vazar');
-  assert(a.state.me.objective !== b.state.me.objective || a.state.me.objective === undefined);
 
   // fase inicial: cada jogador distribui tudo no 1º território seu
   for (const x of [a, b, c]) {

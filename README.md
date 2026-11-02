@@ -31,6 +31,15 @@ Observações:
 - No plano gratuito o primeiro acesso após um período parado pode demorar ~1 minuto para acordar.
 - Jogadores que caem ou atualizam a página voltam sozinhos para o mesmo lugar (a sessão fica salva no navegador). Se alguém sumir de vez, o anfitrião pode usar **"Jogar por ele"** para a partida continuar.
 
+## Tempo de jogo, sons e animações
+
+- **Relógio:** cada fase (preparação, reforço, ataque, remanejamento) tem **no máximo 60 segundos**, com contagem regressiva na tela (amarela aos 20 s, vermelha e com "tiques" nos últimos 10 s).
+- **Jogada automática:** se o tempo acabar, o servidor joga por quem não agiu: distribui os reforços nas comunidades de fronteira (começando pelas mais fracas), troca cartas se for obrigatório, resolve uma ocupação pendente e encerra o turno **sem atacar**.
+- **Ausente:** quem estoura o tempo fica marcado como *ausente*; nos turnos seguintes o jogo joga por essa pessoa após ~10 s, até ela clicar em **Voltei** ou jogar por conta própria. Jogadores desconectados são jogados automaticamente após ~4 s.
+- **Sons:** efeitos sintetizados no navegador (WebAudio), sem arquivos de áudio: cliques, reforços, dados, golpes, conquista, tecnologia, armas, cartas, vitória, fim de tempo e mais. O botão 🔊 no canto inferior esquerdo liga/desliga e lembra a escolha.
+- **Animações:** números de soldados que sobem/descem sobre as comunidades, anéis na conquista, projéteis nos ataques e disparos, tremor nos alvos, cartas entrando na mão, relógio pulsando e confete na vitória. Respeita a preferência do sistema por *menos movimento*.
+- Variáveis opcionais do servidor (úteis em testes): `TURN_SECONDS` (só pode diminuir o limite de 60), `AFK_DELAY_MS` e `AFK_GRACE_MS`.
+
 ## Regras
 
 **A cidade:** 42 comunidades em 6 regiões. Bônus de reforço por região inteira dominada: Zona Oeste 7, Zona Norte 5, Centro 5, Baixada 3, Zona Sul 2, Litoral 2.
@@ -82,7 +91,8 @@ Para ajustar o equilíbrio, edite as tabelas `TECHS`, `WEAPONS` e `ACTION_CARDS`
 ## Testes
 
 ```bash
-npm test                 # valida o mapa e simula 90 partidas completas (2 a 10 jogadores) contra o motor
+npm test                 # valida o mapa e simula 90 partidas completas (2 a 10 jogadores)
+npm run test:timer       # relógio de fase e jogada automática (sobe servidores de teste sozinho)
 npm start                # em outro terminal:
 node test/e2e.js         # teste multiplayer ponta a ponta via Socket.IO (inclui sala de 10 jogadores)
 ```

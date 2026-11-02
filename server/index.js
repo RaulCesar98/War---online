@@ -11,6 +11,13 @@ const { Game } = require('./game');
 const PORT = process.env.PORT || 3000;
 const { MAX_PLAYERS } = data;
 const ROOM_TTL_MS = 6 * 60 * 60 * 1000; // salas inativas por 6h são removidas
+// Tempo máximo de cada fase (preparação, reforço, ataque, remanejamento): nunca passa de 60 s.
+// TURN_SECONDS só pode diminuir o limite (útil em testes).
+const TURN_SECONDS = Math.min(60, Math.max(1, Number(process.env.TURN_SECONDS) || 60));
+// Quem está desconectado joga automaticamente após AFK_DELAY_MS; quem já estourou o tempo (ausente) mas
+// continua conectado tem AFK_GRACE_MS de tolerância no turno seguinte (qualquer jogada tira a ausência).
+const AFK_DELAY_MS = Math.max(300, Number(process.env.AFK_DELAY_MS) || 4000);
+const AFK_GRACE_MS = Math.max(300, Number(process.env.AFK_GRACE_MS) || 10000);
 
 const app = express();
 const server = http.createServer(app);
@@ -26,6 +33,7 @@ app.get('/api/map', (_req, res) => {
     colors: data.COLORS,
     tradeSeq: data.TRADE_SEQ,
     maxPlayers: MAX_PLAYERS,
+    turnSeconds: TURN_SECONDS,
     startArmies: data.TOTAL_ARMIES,
     objectives: data.OBJECTIVES,
     expanded: {
@@ -71,15 +79,65 @@ function publicRoom(room) {
   };
 }
 
+// Arma (ou mantém) o relógio da fase atual. O prazo só é reiniciado quando a fase ou o turno muda.
+function armTimer(room) {
+  const g = room.game;
+  if (!g || g.phase === 'over') {
+    clearTimeout(room.timer);
+    room.timer = null;
+    room.timerKey = '';
+    room.deadline = 0;
+    return;
+  }
+  const key = g.phase === 'setup' ? 'setup' : `${g.phase}|${g.turn}|${g.round}`;
+  if (key === room.timerKey) return;
+  clearTimeout(room.timer);
+  room.timerKey = key;
+  let ms = TURN_SECONDS * 1000;
+  if (g.phase !== 'setup') {
+    const rp = room.players[g.turn];
+    if (!(rp && rp.connected)) ms = Math.min(ms, AFK_DELAY_MS);
+    else if (g.players[g.turn].afk) ms = Math.min(ms, AFK_GRACE_MS);
+  }
+  room.timerMs = ms;
+  room.deadline = Date.now() + ms;
+  room.timer = setTimeout(() => onTimeout(room, key), ms);
+}
+
+// Tempo esgotado: o servidor joga por quem não agiu (distribui reforços e encerra o turno, sem atacar).
+function onTimeout(room, key) {
+  const g = room.game;
+  if (!g || room.timerKey !== key || g.phase === 'over') return;
+  try {
+    if (g.phase === 'setup') {
+      g.players.forEach((p, i) => {
+        if (p.alive && !p.ready) { g.autoPlay(i); p.afk = true; }
+      });
+    } else {
+      const i = g.turn;
+      const res = g.autoPlay(i);
+      if (!res.ok) console.error('autoPlay falhou:', res.error);
+      g.players[i].afk = true;
+    }
+  } catch (err) {
+    console.error('Erro na jogada automática', err);
+  }
+  room.timerKey = ''; // força recalcular o prazo da próxima fase
+  broadcast(room);
+}
+
 function broadcast(room) {
   room.touched = Date.now();
+  armTimer(room);
   const info = publicRoom(room);
   room.players.forEach((p, i) => {
     if (!p.socketId) return;
     const sock = io.sockets.sockets.get(p.socketId);
     if (!sock) return;
     sock.emit('room', { ...info, me: { idx: i, isHost: p.token === room.hostToken } });
-    if (room.game) sock.emit('state', room.game.view(i));
+    if (room.game) {
+      sock.emit('state', { ...room.game.view(i), timer: { deadline: room.deadline, now: Date.now(), total: room.timerMs || TURN_SECONDS * 1000 } });
+    }
   });
 }
 
@@ -112,6 +170,7 @@ io.on('connection', (socket) => {
     if (!name) return cb({ ok: false, error: 'Digite seu nome.' });
     const room = {
       code: makeCode(), hostToken: null, players: [], game: null, chat: [], touched: Date.now(), expanded: true,
+      timer: null, timerKey: '', deadline: 0,
     };
     const player = { token: crypto.randomUUID(), name, socketId: null, connected: false };
     room.players.push(player);
@@ -162,7 +221,7 @@ io.on('connection', (socket) => {
     player.connected = false;
     if (!room.game) {
       room.players.splice(idx, 1);
-      if (!room.players.length) rooms.delete(room.code);
+      if (!room.players.length) { clearTimeout(room.timer); rooms.delete(room.code); }
     }
     if (rooms.has(room.code)) { ensureHost(room); broadcast(room); }
   });
@@ -254,7 +313,7 @@ setInterval(() => {
   const now = Date.now();
   rooms.forEach((room, code) => {
     const anyone = room.players.some((p) => p.connected);
-    if (!anyone && now - room.touched > ROOM_TTL_MS) rooms.delete(code);
+    if (!anyone && now - room.touched > ROOM_TTL_MS) { clearTimeout(room.timer); rooms.delete(code); }
   });
 }, 10 * 60 * 1000).unref();
 
